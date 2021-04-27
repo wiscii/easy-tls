@@ -1,0 +1,5976 @@
+#!/bin/sh
+
+# Copyright - negotiable
+copyright ()
+{
+: << VERBATUM_COPYRIGHT_HEADER_INCLUDE_NEGOTIABLE
+# Easy-TLS -- A Shell-based Easy-RSA extension utility to help manage
+#               * OpenVPN specific TLS keys
+#               * Easy-RSA based x509 security credentials
+#               * Verified 'inline' combined OpenVPN node packages
+#
+# Copyright (C) 2020 Richard Bonhomme (Friday 13th of March 2020)
+# https://github.com/TinCanTech/easy-tls
+# tincanteksup@gmail.com
+# All Rights reserved.
+#
+# This code is released under version 2 of the GNU GPL
+# See LICENSE of this project for full licensing details.
+#
+# Acknowledgement:
+# This utility is "written in the style of" and "borrows heavily from" Easy-RSA
+#
+# Easy-TLS is inspired by syzzer
+# See: https://github.com/OpenVPN/openvpn/blob/master/doc/tls-crypt-v2.txt
+#
+VERBATUM_COPYRIGHT_HEADER_INCLUDE_NEGOTIABLE
+}
+
+# Easy-TLS requirements:
+# + Easy-RSA Version 3.0.8
+# + OpenVPN Version 2.5
+#
+
+
+# Help/usage output to stdout
+usage()
+{
+	# command help:
+	print '
+Easy-TLS usage and overview
+
+USAGE: easytls [options] COMMAND [command-options]
+
+A list of commands is shown below. To get detailed usage and help for a
+command, use:
+  ./easytls help COMMAND
+
+For a listing of options that can be supplied before the command, use:
+  ./easytls help options
+
+For a list of abbreviated command names, use:
+  ./easytls help abb
+
+For a list of configurable options, use:
+  ./easytls help config
+
+Here is the list of commands available with a short syntax reminder.
+Use the "help" command above to get full usage details.
+
+  config
+  init-tls <hash_algorithm>
+  build     :Inter-active menu to build TLS keys
+  inline    :Inter-active menu to build Inline files
+  remove    :Inter-active menu to remove TLS keys and Inline files
+  script    :Inter-active menu to configure Server scripts
+  build-tls-auth
+  build-tls-crypt
+  build-tls-crypt-v2-server <server_filename_base>
+  build-tls-crypt-v2-client
+        <server_filename_base> <client_filename_base> <HW-ADDR> <HW-ADDR>
+  remove-tlskey <client_filename_base>
+  save-id
+  status [ cmd-opts ]
+  inline-tls-auth <filename_base> <key_direction> [ cmd-opts ]
+  inline-tls-crypt <filename_base> [ cmd-opts ]
+  inline-tls-crypt-v2 <filename_base> [ cmd-opts ]
+  remove-inline <filename_base>
+  inline-show <filename_base>
+  inline-index-rebuild
+  inline-expire <filename_base>
+  cert-expire <filename_base> | <ca>
+  disable <filename_base>
+  enable <filename_base>
+  disabled-list-rehash
+
+NOTE: Easy-TLS requires that you have a working Easy-RSA PKI in place.
+NOTE: Easy-TLS requires that you have OpenVPN installed.
+
+Easy-TLS also has a useful Howto and wiki with expanded help and examples:
+* https://github.com/TinCanTech/easy-tls/blob/master/EasyTLS-Howto-ii.md
+* https://github.com/TinCanTech/easy-tls/wiki'
+
+	# collect/show dir status:
+	err_source="Not defined: vars autodetect failed and no value provided"
+	work_dir="${EASYRSA:-$err_source}"
+	pki_dir="${EASYRSA_PKI:-$err_source}"
+	tls_dir="${EASYTLS_PKI:-$err_source}"
+	print "
+DIRECTORY STATUS (commands would take effect on these locations)
+  EASYTLS: $work_dir
+      PKI: $pki_dir
+      TLS: $tls_dir"
+} # => usage()
+
+# Detailed command help
+# When called with no args, calls usage(), otherwise shows help for a command
+cmd_help()
+{
+	text=""
+	opts=""
+	case "$1" in
+		init-tls) text="
+  init-tls <hash_algorithm>
+      Removes & re-initializes the TLS key dir
+
+      Specify an alternat6e <hash_algorithm> to use. Default SHA256" ;;
+		build|inline|remove|script) text="
+  Inter-active menus to build, inline, remove and config various Easy-TLS files" ;;
+		bta|build-tls-auth) text="
+  build-tls-auth
+      Create an OpenVPN TLS auth PSK (tls-auth.key)" ;;
+		btc|build-tls-crypt) text="
+  build-tls-crypt
+      Create an OpenVPN TLS crypt PSK (tls-crypt.key)" ;;
+		btc2s|btcv2s|build-tls-crypt-v2-server) text="
+  build-tls-crypt-v2-server <server_filename_base>
+      Create an OpenVPN TLS crypt V2 Server key" ;;
+		btv2c|btcv2c|build-tls-crypt-v2-client) text="
+  build-tls-crypt-v2-client
+      <server_filename_base> <client_filename_base> <HW-ADDR> <HW-ADDR>
+
+      Create an OpenVPN TLS crypt V2 Client key
+
+      The metadata can also be used to specify Hardware Addresses which this
+      key is allowed to be used from.  Use easytls-cryptv2-client-connect.sh
+      to verify the HW-ADDR.
+
+      Note: Both scripts are required to successfully verify Hardware.
+
+      Each Client can have multiple TLS-Crypt-V2 keys by using option:
+      -k|--subkey-name=NAME
+      This allows an unlimited number of keys, see the following wiki article
+      * wiki/15-=-Multiple-TLS-Crypt-V2-Keys-per-X509-Certificate
+      for further details." ;;
+		remove-tlskey) text="
+  remove-tlskey <client_filename_base>
+      Remove a TLS-Crypt-V2 Client key and update the tlskey-index." ;;
+		sid|save-id) text="
+  save-id [ no options ]
+      Save the CA-Identity to easytls/easytls-ca-identity.txt
+      CA-Identity is the Hex ONLY value of the CA finger print.
+      This can then by used by easytls-cryptv2-verify.sh as a time-saver
+      by not needing to load OpenSSL to generate the CA fingerprint.
+      Combining this with 'easytls-cryptv2-verify.sh --verify-via-index',
+      OpenSSL binary never needs to be loaded by easytls-cryptv2-verify.sh
+      See EasyTLS Howto for an example." ;;
+		s|status) text="
+  status [ cmd-opts ]
+      Compare Easy-RSA certificate(s) to Easy-TLS inline(s) status"
+			opts="
+	val|valid   - List only Easy-RSA valid certificates
+	rev|revoked - List only Easy-RSA revoked certificates
+	inl|inline  - List only Easy-TLS inline files
+	inv|invalid - List only Easy-TLS invalid inline files
+	ren|renewed - List only Easy-RSA renewed certificates
+	tls|tlskeys - List only Easy-TLS known TLS keys" ;;
+		ita|inline-tls-auth) text="
+  inline-tls-auth <filename_base> <key_direction> [ cmd-opts ]
+      Create a complete OpenVPN node package from Easy-RSA and Easy-TLS files
+      for VPN node <filename_base> using the Easy-TLS TLS auth file
+      <key_direction> '0' or '1' (key-direction is mandatory)"
+			opts="
+        nokey   - do not require an x509 key (default: key is required)
+        add-dh  - inline Diffie-Hellman parameters file (Server only)
+                  Default file is easyrsa3/pki/dh.pem
+                  To specify an alternative file use the --dh option" ;;
+		itc|inline-tls-crypt) text="
+  inline-tls-crypt <filename_base> [ cmd-opts ]
+      Create a complete OpenVPN node package from Easy-RSA and Easy-TLS files
+      for VPN node <filename_base> using the Easy-TLS TLS crypt file"
+			opts="
+        nokey   - do not require an x509 key (default: key is required)
+        add-dh  - inline Diffie-Hellman parameters file (Server only)
+                  Default file is easyrsa3/pki/dh.pem
+                  To specify an alternative file use the --dh option" ;;
+		itv2|itcv2|inline-tls-crypt-v2) text="
+  inline-tls-crypt-v2 <filename_base> [ cmd-opts ]
+      Create a complete OpenVPN node package from Easy-RSA and Easy-TLS files
+      for VPN node <filename_base> using the Easy-TLS TLS crypt v2 file"
+			opts="
+        nokey   - do not require an x509 key (default: key is required)
+        add-dh  - inline Diffie-Hellman parameters file (Server only)
+                  Default file is easyrsa3/pki/dh.pem
+                  To specify an alternative file use the --dh option
+        no-md   - Do not add public metadata details to inline file
+        add-hw  - Include hardware address in metadata details" ;;
+		irm|irv|inline-remove) text="
+  remove-inline <filename_base>
+      Delete <filename_base>.inline and update the inline-index
+      When an Easy-RSA certificate is revoked then the inline file is invalid" ;;
+		is|inline-show) text="
+  inline-show <filename_base>
+      Copy <filename_base>.inline to stdout" ;;
+		inline-index-rebuild) text="
+  inline-index-rebuild
+      Rebuild easytls-index.txt
+      If you need to do this then you may have found a bug, please
+      raise an issue https://github.com/TinCanTech/easy-tls/issues" ;;
+		ix|inline-expire) text="
+  inline-expire <filename_base>
+      Display inline expiry Date for <filename_base>"
+			opts="
+        If no <filename_base> is given then list all inline expiry Dates" ;;
+		cx|cert-expire) text="
+  cert-expire <filename_base> | <ca>
+      Display certificate expiry Date for <filename_base>"
+			opts="
+        If <filename_base> is 'ca' then show ca.crt expiry
+        If no <filename_base> is given then list all certificate expiry Dates" ;;
+		d|disable) text="
+  d|disable <filename_base>
+      Add serial number for <filename_base> to the disabled list
+      for immediate use by the easytls-cryptv2-verify.sh script.
+      This also supports --sub-key-name for clients with multiple keys" ;;
+		e|enable) text="
+  e|enable <filename_base>
+      Remove serial number for <filename_base> from the disabled list
+      for immediate use by the easytls-cryptv2-verify.sh script.
+      This also supports --sub-key-name for clients with multiple keys" ;;
+		disabled-list-rehash) text="
+  disabled-list-rehash
+       Rehash the disabled-list if the current hash is corrupted.
+       Does not rebuild the disabled-list. If there is an error in the list
+       then edit the list manually and rehash it with 'disabled-list-rehash'" ;;
+		import-key) text="
+  import-key <key-type> <key-name> <commonName>
+      Import a pre-existing TLS key <key-name> to EasyTLS directory.
+
+      <key-type> is one of the supported TLS key types:
+      tls-auth, tls-crypt or tls-crypt-v2.
+
+      Examples (Using default PKI directory):
+
+      Importing TLS-Auth or TLS-Crypt keys renames the key file as shown:
+
+        * 'import-key tls-auth ./ta.key'
+          Imported key name: ./pki/easytls/tls-auth.key
+
+        * 'import-key tls-crypt ./tc.key'
+          Imported key name: ./pki/easytls/tls-crypt.key
+
+      TLS-crypt-v2 keys must be named after the commonName of the entity:
+      (Default <commonName> is <key-name>)
+
+        * 'import-key tls-crypt-v2 ./serv-v2.key server'
+          Imported key name: ./pki/easytls/server-tls-crypt-v2.key
+
+        * 'import-key tls-crypt-v2 ./cli2-v2.key client02'
+          Imported key name: ./pki/easytls/client02-tls-crypt-v2.key" ;;
+
+		options)
+			opt_usage ;;
+		abb)
+			opt_abbreviations ;;
+		cf|cfg|config)
+			opt_config ;;
+		"")
+			usage ;;
+		*) text="
+  Unknown command: '$1' (try without commands for a list of commands)" ;;
+	esac
+
+	# display the help text
+	[ -n "$text" ] && print "$text"
+	[ -n "$opts" ] && print "
+      cmd-opts is an optional set of command options from this list:
+$opts"
+	return 0
+} # => cmd_help()
+
+# Options usage
+opt_usage()
+{
+	print '
+Easy-TLS Global Option Flags
+
+The following options may be provided before the command. Options specified
+at runtime override env-vars and any "vars" file in use. Unless noted,
+non-empty values to options are mandatory.
+
+General options:
+
+--openvpn="FILE"   : The full (or relative) <path-to> and <file-name-of>
+                     your preferred openvpn(.exe) executable openvpn file.
+-n|--no-auto-check : For performance you can disable auto-check.
+-b|--batch         : Set automatic (no-prompts when possible) mode.
+-v|--verbose       : Verbose output.
+-s|--silent        : Silence all message output except prompts.
+-p|--pki-dir="DIR" : Declare the EasyRSA PKI directory.
+--vars="FILE"      : Define a specific "vars" file to use for Easy-RSA config.
+--dh=FILE          : Define an alternate Diffie-Hellman parameters file.
+-i|--inline        : When building a TLS Crypt V2 key, also build the Inline file.
+                     This only accepts default options for inline-tls-crypt-v2.
+-y|--why-disable-file-hash
+                   : To temporarily disable file hash verification.
+
+-g|--custom-group=XYZ
+
+      <CUSTOM-GROUP> is an optional single word which will be used
+      in .inline files to identify the group to which this PKI belongs.
+      Also added to TLS-Crypt-V2 client key metadata.
+
+      The <CUSTOM-GROUP> can also be matched against in easytls-cryptv2-verify.sh
+      by using the command line switch --c|custom-group=XYZ
+
+-k|--sub-key-name=Name
+
+      This allows for one single X509 client certificate to have multiple
+      TLS Crypt V2 client keys associated with it.  For example, the same
+      X509 certificate can be used from different locations with unique
+      TLS crypt V2 keys.'
+} # => opt_usage()
+
+# Option abbreviations
+opt_abbreviations ()
+{
+	print '
+Easy-TLS abbreviations:
+
+  config                        - cf | cfg
+  init-tls                      - init
+  build-tls-auth                - bta
+  build-tls-crypt               - btc
+  build-tls-crypt-v2-server     - btv2s | btcv2s
+  build-tls-crypt-v2-client     - btv2c | btcv2c
+  remove-tlskey                 - No abbreviation
+  save-id                       - sid
+ 
+  status                        - s
+	Easy-RSA valid certificates   - val|valid
+	Easy-RSA revoked certificates - rev|revoked
+	Easy-TLS inline files         - inl|inline
+	Easy-TLS invalid inline files - inv|invalid
+	Easy-RSA renewed certificates - ren|renewed
+	Easy-TLS known TLS keys       - tls|tlskeys
+
+  inline-tls-auth               - ita
+  inline-tls-crypt              - itc
+  inline-tls-crypt-v2           - itv2 | itcv2
+  remove-inline                 - No abbreviation
+  inline-show                   - is
+  inline-index-rebuild          - No abbreviation
+  inline-expire                 - ix
+  cert-expire                   - cx
+  disable                       - d
+  enable                        - e
+  disabled-list-rehash          - No abbreviation'
+}
+
+# Option abbreviations
+opt_config ()
+{
+	print '
+Easy-TLS configurable options:
+
+  ac|auto.check on|off
+     Always run auto-check
+     Toggle auto.check on|off.
+
+  cg|custom.group NAME
+     Save the Custom Group NAME - NAME must be a single contiguous word.
+
+     Once set and used to build any TLS-Crypt-V2 Client keys, this NAME
+     cannot be changed.
+
+     When using easytls-crypt-v2-verify.sh in your openvpn server, if you
+     change it then your current keys will no longer be able to connect.
+
+  co|custom.openvpn "/full/path/to/openvpn(.exe)"
+     Save your custom openvpn binary location.
+     EG: /usr/local/bin/openvpn
+         Qutotes are not required.
+     EG: "C:/Program Files/OpenVPN/mybin/openvpn.exe"
+         Quotes are required for spaces.
+         Back-slash is not support, use Forward-slash "/" ONLY.
+
+  im|inline.metadata on|off
+     Add metadata to inline file
+     Toggle inline-file metadata on|off.
+
+  ih|inline.hardware on|off
+     Include metadata hardware-addresses in metadata for inline file
+     Toggle inline-file hardware-address metadata on|off.'
+}
+
+# Wrapper around 'printf' - clobber 'print' since it's not POSIX anyway
+print()
+{
+	[ "$EASYTLS_SILENT" ] && return
+	"$EASYTLS_PRINTF" "%s\n" "$*"
+}
+
+# Exit fatally with a message to stderr
+# present even with EASYTLS_BATCH as these are fatal problems
+die()
+{
+	easytls_version
+	print "
+Easy-TLS error:
+
+${help_note:-No extra help is configured}
+
+$1" 1>&2
+	exit "${2:-1}"
+} # => die()
+
+# Specific error messages from sub-functions which do not use die()
+error_msg ()
+{
+	print "ERROR: $1"
+}
+
+# remove temp files and do terminal cleanups
+cleanup()
+{
+	[ -z "$EASYRSA_TEMP_DIR_session" ] || "$EASYTLS_RM" -rf "$EASYRSA_TEMP_DIR_session"
+	(stty echo 2>/dev/null) || { (set -o echo 2>/dev/null) && set -o echo; }
+	[ $EASYTLS_SILENT ] || echo "" # just to get a clean line
+} # => cleanup()
+
+# non-fatal warning output
+warn()
+{
+	[ "$EASYTLS_SILENT" ] && return
+		print "
+WARNING:
+  $1
+" 1>&2
+} # => warn()
+
+# informational notices to stdout
+notice()
+{
+	[ "$EASYTLS_SILENT" ] && return
+		print "
+$1"
+} # => notice()
+
+# intent confirmation helper func
+# returns without prompting in EASYTLS_BATCH
+confirm()
+{
+	[ "$batch_mode" ] && return
+	[ "$EASYTLS_BATCH" ] && return
+	prompt="$1"
+	value="$2"
+	msg="$3"
+	input=""
+	print "
+$msg
+
+  Type the word '$value' to continue, or any other input to abort."
+	"$EASYTLS_PRINTF" '\n%s' "  $prompt"
+	read -r input
+	[ "$input" = "$value" ] && return
+	notice "Aborting without confirmation."
+	exit 9
+} # => confirm()
+
+vars_source_check() {
+	# Check for defined EASYRSA_PKI
+	[ -n "$EASYRSA_PKI" ] || die "\
+EASYRSA_PKI env-var undefined"
+} # => vars_source_check()
+
+# Basic sanity-check of PKI init and complain if missing
+verify_pki_init () {
+	help_note="Run easyrsa without commands for usage and command help."
+
+	# check that the pki dir exists
+	vars_source_check
+	[ -d "$EASYRSA_PKI" ] || die "\
+Easy-TLS requires that you have initialised your Easy-RSA PKI.
+
+Easy-RSA error:
+
+EASYRSA_PKI does not exist (perhaps you need to run init-pki)?
+Expected to find the EASYRSA_PKI at: $EASYRSA_PKI
+$help_note"
+
+	# verify expected dirs present:
+	for i in private reqs; do
+		[ -d "$EASYRSA_PKI/$i" ] || die "\
+Easy-TLS requires that you have initialised your Easy-RSA PKI.
+
+Easy-RSA error:
+
+Missing expected directory: $i (perhaps you need to run init-pki?)
+$help_note"
+	done
+} # => verify_pki_init()
+
+# Verify core CA files present
+verify_ca_init () {
+	help_note="Run without commands for usage and command help."
+
+	# First check the PKI has been initialized
+	verify_pki_init
+
+	# Verify expected files are present. Allow files to be regular files
+	# (or symlinks), but also pipes, for flexibility with ca.key
+	for i in serial index.txt index.txt.attr ca.crt private/ca.key; do
+		if [ ! -f "$EASYRSA_PKI/$i" ] && [ ! -p "$EASYRSA_PKI/$i" ]; then
+			#[ "$1" = "test" ] && return 1
+			die "
+Easy-TLS requires that you have built your EASY-RSA CA.
+
+  Easy-RSA error:
+
+Missing expected CA file: $i (perhaps you need to run build-ca?)
+$help_note"
+		fi
+	done
+
+	# When operating in 'test' mode, return success.
+	# test callers don't care about CA-specific dir structure
+	#[ "$1" = "test" ] && return 0
+
+	# verify expected CA-specific dirs:
+	for i in issued certs_by_serial
+	do
+		[ -d "$EASYRSA_PKI/$i" ] || die "
+Easy-TLS requires that you have built your EASY-RSA CA.
+
+  Easy-RSA error:
+
+Missing expected CA dir: $i (perhaps you need to run build-ca?)
+$help_note"
+	done
+
+	# explicitly return success for callers
+	return 0
+
+} # => verify_ca_init()
+
+
+
+############################################################################
+#
+# EASYTLS MANAGEMENT Section
+#
+
+# Verbose messages
+easytls_verbose ()
+{
+	[ $EASYTLS_VERBOSE ] || return 0
+	[ $EASYTLS_SILENT ] && return 0
+	verbose_message="$*"
+	[ -z "$verbose_message" ] && print "" && return 0
+	print "* $verbose_message"
+}
+
+# Configurable options
+easytls_config ()
+{
+	# Verify config-file and hash has already been done by config_use()
+
+	case "$1" in
+		ha|hash.algorithm)
+			cfg_opt="hash.algorithm"
+			cfg_val=$2
+		;;
+		ac|auto.check)
+			cfg_opt="auto.check"
+			cfg_val=$2
+		;;
+		cg|custom.group)
+			cfg_opt="custom.group"
+			cfg_val=$2
+		;;
+		id|ca.id)
+			cfg_opt="ca.id"
+			cfg_val=$2
+		;;
+		co|custom.openvpn)
+			cfg_opt="custom.openvpn"
+			cfg_val=$2
+		;;
+		im|inline.metadata)
+			cfg_opt="inline.metadata"
+			cfg_val=$2
+		;;
+		ih|inline.hardware)
+			cfg_opt="inline.hardware"
+			cfg_val=$2
+		;;
+		'')
+			# Show config
+			"$EASYTLS_CAT" "$EASYTLS_CONFIG_FILE"
+			return 0
+		;;
+		*)
+			error_msg "Unknown option: $1"
+			return 1
+		;;
+	esac
+
+	case "$cfg_opt" in
+		auto.check|inline.metadata|inline.hardware)
+			case "$cfg_val" in
+				on|off)
+					:
+				;;
+				*)
+					help_note="Supported options:  on | off"
+					die "Unsupported value for $cfg_opt: $cfg_val"
+				;;
+			esac
+		;;
+		custom.group)
+			# Cannot be empty
+			[ -z "$cfg_val" ] && die "Unsupported value for $cfg_opt: $cfg_val"
+			# spaces ?
+			test_val="${cfg_val%% *}"
+			help_note="custom.group does not support spaces."
+			[ "$cfg_val" = "$test_val" ] || \
+				die "Unsupported value for $cfg_opt: $cfg_val"
+
+			confirm "Change your Custom-Group: " "yes" \
+"WARNING:
+
+* Each TLS-Crypt-V2 Server key can only support one Custom-Group.
+  If you have already created Client keys for your Server and you
+  change the Custom-Group then not all of your clients will be
+  allowed to connect, unless you disable the Custom-Group check
+  for the easytls-crypt-v2-verify.sh script."
+		;;
+		custom.openvpn)
+			if [ -n "$cfg_val" ]
+			then
+				# Test for file
+				[ -f "$cfg_val" ] || die "Missing: $cfg_val"
+			fi
+		;;
+		ca.id)
+			help_note="To change your CA-ID you must create a new Easy-RSA CA"
+			[ -n "$EASYTLS_MASTER_ID" ] && \
+				die "The CA-ID cannot be changed"
+			# Do not allow user access to 'easytls config ca.id foo'
+			[ $save_id_authorized ] || \
+				die "Please use 'easytls save-id' to configure your CA-ID"
+		;;
+		hash.algorithm)
+			help_note="See help for init-tls"
+			die "To change your HASH you must create a new Easy-TLS PKI"
+		;;
+		*)
+			die "Unknown option: $cfg_opt"
+		;;
+	esac
+	unset help_note
+
+	# Write config
+	config_update || die "Error updating config."
+	config_save_hash || die "Error hashing config."
+} # => easytls_config ()
+
+# Update config
+config_update ()
+{
+	# Find the pattern
+	"$EASYTLS_GREP" -q "^${cfg_opt}[[:blank:]]=[[:blank:]].*$" "$EASYTLS_CONFIG_FILE" || {
+		error_msg "config_update - input error"
+		return 1
+		}
+
+	# Replace the pattern
+	"$EASYTLS_SED" -i \
+	-e "s\`^${cfg_opt}[[:blank:]]=[[:blank:]].*$\`${cfg_opt} = ${cfg_val}\`g" \
+	"$EASYTLS_CONFIG_FILE" || {
+		error_msg "config_update - replace error"
+		return 1
+		}
+
+	easytls_verbose "config-file updated: ${cfg_opt} = ${cfg_val}"
+	return 0
+} # => config_update ()
+
+# Use config
+config_use ()
+{
+	# If config file does not exist then this must be init-tls
+	[ -f "$EASYTLS_CONFIG_FILE" ] || {
+		EASYTLS_not_init=1
+		return 0
+		}
+
+	# If the config file exists then the hash must exist
+	[ -f "$EASYTLS_CONFIG_HASH" ] || {
+		error_msg "config_verify_hash - Missing Config Hash: $EASYTLS_CONFIG_HASH"
+		return 1
+		}
+
+	# Clear config errors
+	unset config_error
+
+	# Cannot use IFS because Windows/sh/read needs to recognise CRLF as well
+	# It is simplest to rely on Windows/sh/read default which does CRLF or NL
+	# Any writes to config and Windows/sed converts all CRLF to NL anyway
+	while read -r cfg_opt cfg_equ cfg_val
+	do
+		# May as well check it for shellcheck
+		[ "$cfg_equ" = "=" ] || config_error=4
+
+		# These settings do not change command line
+		case "$cfg_opt" in
+			auto.check)
+				case "$cfg_val" in
+					off)	set_var auto_check_disabled 1 ;;
+					on)		: ;;
+					*)		config_error=2 ;;
+				esac
+				;;
+			inline.metadata)
+				case "$cfg_val" in
+					off)	set_var no_metadata 1 ;;
+					on)		: ;;
+					*)		config_error=3 ;;
+				esac
+				;;
+			inline.hardware)
+				case "$cfg_val" in
+					off)	: ;;
+					on)		set_var add_hardware 1 ;;
+					*)		config_error=3 ;;
+				esac
+				;;
+			custom.group)
+				[ -n "$cfg_val" ] && set_var TLSKEY_CUSTOM_GRP "$cfg_val"
+				set_var TLSKEY_CUSTOM_GRP "EASYTLS"
+				;;
+			custom.openvpn)
+				[ -n "$cfg_val" ] && set_var EASYTLS_OPENVPN "$cfg_val"
+				set_var EASYTLS_OPENVPN "openvpn"
+				;;
+			hash.algorithm)
+				# This is set explicitly here to protect config
+				export EASYTLS_HASH_ALGO="$cfg_val"
+				;;
+			ca.id)
+				# This is set explicitly here to protect config
+				export EASYTLS_MASTER_ID="$cfg_val"
+				;;
+			*)
+				die "config error"
+				;;
+		esac
+	done < "$EASYTLS_CONFIG_FILE"
+
+	# Set default hash.algorithm
+	EASYTLS_HASH_ALGO="${EASYTLS_HASH_ALGO:-SHA256}"
+
+	# Verify the Config hash
+	config_verify_hash || {
+		error_msg "Config file hash failed."
+		error_msg "config_saved_hash:   $config_saved_hash"
+		error_msg "config_current_hash: $config_current_hash"
+		return 1
+		}
+
+	[ $config_error ] && return "$config_error"
+	easytls_verbose "config-file loaded OK"
+} # => config_use ()
+
+# Verify the config-file hash
+config_verify_hash ()
+{
+	[ $verify_file_hash_disabled ] && return 0
+	[ $EASYTLS_TRAVIS_CI ] && return 0
+	# Read the saved hash
+	config_saved_hash="$("$EASYTLS_CAT" "$EASYTLS_CONFIG_HASH")"
+
+	# Generate the current hash
+	generate_file_hash "$EASYTLS_CONFIG_FILE" || {
+		error_msg "config_verify_hash - Config file failed to generate hash."
+		return 1
+		}
+
+	# Set the current hash
+	config_current_hash="$generated_hash"
+
+	# Verify hash match
+	[ "$config_saved_hash" = "$config_current_hash" ] || {
+		error_msg "config_verify_hash - Verify hash match failed."
+		return 1
+		}
+
+	easytls_verbose "config-file hash check OK"
+	return 0
+} # => config_verify_hash ()
+
+# Hash config-file
+config_save_hash ()
+{
+	# Generate the current hash
+	generate_file_hash "$EASYTLS_CONFIG_FILE" || {
+		error_msg "config_file_save_hash: Failed to hash: $EASYTLS_CONFIG_FILE"
+		return 1
+		}
+
+	# Set the current hash
+	config_current_hash="$generated_hash"
+
+	# Save the current hash
+	"$EASYTLS_PRINTF" '%s' "$config_current_hash" > "$EASYTLS_CONFIG_HASH" || {
+		error_msg "config_file_save_hash - Save the current hash failed."
+		return 1
+		}
+
+	easytls_verbose "config-file hash save OK"
+	return 0
+} # => config_save_hash ()
+
+# Verify Openvpn is available
+verify_openvpn ()
+{
+	# Find openvpn or openvpn.exe
+	help_note="See ./easytls help options - Option: --openvpn"
+
+	# extract openvpn version
+	openvpn_version="$("$EASYTLS_OPENVPN" --version)"
+	case "${openvpn_version%% *}" in
+		OpenVPN) : ;;
+		*) die "Missing or invalid OpenVPN" ;;
+	esac
+
+	openvpn_version="${openvpn_version#OpenVPN }"
+	openvpn_version="${openvpn_version%% *}"
+	openvpn_version="${openvpn_version%_*}"
+	[ ${#openvpn_version} -gt 3 ] && openvpn_version="${openvpn_version%.*}"
+	case "$openvpn_version" in
+		2.5|2.6) : ;;
+		2.4) : ;;
+		*) die "Unsupported OpenVPN version: $openvpn_version" ;;
+	esac
+	unset help_note
+} # => verify_openvpn ()
+
+# Verify TLS has been initialised
+verify_tls_init ()
+{
+	help_note="Use './easytls init-tls' to initialise"
+	{
+		[ -d "$EASYTLS_PKI" ] && \
+		[ -f "$EASYTLS_CONFIG_FILE" ] && \
+		[ -f "$EASYTLS_CONFIG_HASH" ] && \
+		[ -f "$EASYTLS_INLINE_INDEX" ] && \
+		[ -f "$EASYTLS_IL_INDEX_HASH" ] && \
+		[ -f "$EASYTLS_KEY_INDEX" ] && \
+		[ -f "$EASYTLS_KEY_HASH" ] && \
+		[ -f "$EASYTLS_DISABLED_LIST" ] && \
+		[ -f "$EASYTLS_DISABLED_HASH" ]
+	} || die "EasyTLS has not been initialised"
+	unset help_note
+} # => verify_tls_init ()
+
+# init-tls backend:
+init_tls ()
+{
+	# Easy-TLS requires that your Easy-RSA PKI is initialised
+	verify_pki_init
+
+	# Easy-TLS does NOT support folders with spaces in the name
+	# So bail out now and don't waste time
+	if [ "${EASYTLS_PKI##* }" = "$EASYTLS_PKI" ]
+	then
+		# OK
+		:
+	else
+		help_note="Easy-TLS does NOT support folders with spaces in the name"
+		die "Fix your folder name: $EASYTLS_PKI"
+	fi
+
+	# If EASYTLS_PKI exists, confirm before we remove
+	# skipped with EASYTLS_BATCH
+	if [ -d "$EASYTLS_PKI" ]; then
+		confirm "Confirm removal: " "yes" "
+WARNING!!!
+
+You are about to remove the EASYTLS_PKI at: $EASYTLS_PKI
+and initialize a fresh TLS PKI here."
+		# now remove it:
+		"$EASYTLS_RM" -rf "$EASYTLS_PKI" \
+		|| die "Removal of TLS dir failed. Check/correct errors above"
+	fi
+
+	# Explicitly set EASYTLS_HASH_ALGO here
+	EASYTLS_HASH_ALGO="${1:-SHA256}"
+
+	# Create easytls dir in EasyRSA-PKI dir
+	"$EASYTLS_MKDIR" -p "$EASYTLS_PKI" || die "Failed to create easytls dir"
+
+	# Create data dir in easytls dir
+	"$EASYTLS_MKDIR" -p "$EASYTLS_DATA_DIR" || die "Failed to create data dir"
+
+	# Create metadata dir in easytls dir
+	"$EASYTLS_MKDIR" -p "$EASYTLS_MD_DIR" || die "Failed to create metadata dir"
+
+	# Create inline-index
+	head_text="# EasyTLS inline-index - Created: $(date)"
+	head_text="$head_text - inline-hash|inline-serial|CN|sub-key|tlskey-serial"
+	"$EASYTLS_PRINTF" '%s\n' "$head_text" > "$EASYTLS_INLINE_INDEX" \
+		|| die "Failed to create inline-index"
+
+	# Save inline-index hash
+	inline_index_save_hash || die "Failed to hash inline-index"
+
+	# Create tlskey-index
+	head_text="# EasyTLS tlskey-index - Created: $(date)"
+	head_text="$head_text - tlskey-serial|cert-serial|CN|sub-key"
+	"$EASYTLS_PRINTF" '%s\n' "$head_text" > "$EASYTLS_KEY_INDEX" \
+		|| die "Failed to create tlskey-index"
+
+	# Save tlskey-index hash
+	tlskey_index_save_hash || die "Failed to create tlskey-index Hash."
+
+	# Create config-file
+	{
+		#"$EASYTLS_PRINTF" '%s\n' "batch.mode = off"
+		"$EASYTLS_PRINTF" '%s\n' "hash.algorithm = ${EASYTLS_HASH_ALGO}"
+		"$EASYTLS_PRINTF" '%s\n' "ca.id = "
+		"$EASYTLS_PRINTF" '%s\n' "custom.group = "
+		"$EASYTLS_PRINTF" '%s\n' "auto.check = on"
+		"$EASYTLS_PRINTF" '%s\n' "inline.metadata = on"
+		"$EASYTLS_PRINTF" '%s\n' "inline.hardware = off"
+		"$EASYTLS_PRINTF" '%s\n' "custom.openvpn = "
+	} > "$EASYTLS_CONFIG_FILE" || die "Failed to create config-file"
+
+	# Save config-file hash
+	config_save_hash || die "Failed to hash config-file"
+
+	# Auto-save the current EasyRSA CA-ID if available, warn if not
+	EASYTLS_INIT=1
+	save_id || "$EASYTLS_PRINTF" '%s\n\n' "      Failed to Save CA-ID."
+	unset EASYTLS_INIT
+
+	# Create disabled-list
+	head_text="# EastTLS disabled-list - Created: $(date)"
+	"$EASYTLS_PRINTF" '%s\n' "$head_text" > "$EASYTLS_DISABLED_LIST" \
+		|| die "Failed to create disabled-list"
+
+	# Save disabled-list hash
+	disabled_list_save_hash || die "Failed to create disabled-list Hash."
+
+	# Create empty master hash
+	"$EASYTLS_PRINTF" '%s' "" > "$EASYTLS_WISCII_HASH" || die "Create master-hash failed"
+
+	notice "init-tls complete; you may now create TLS keys and .inline files.
+  Your newly created TLS dir is:
+
+    $EASYTLS_PKI"
+
+	notice "To configure your Easy-TLS custom group now, use:
+
+    'easytls config custom.group YOUR_GROUP'"
+} # => init_tls ()
+
+# Auto-check for invalid inline files
+# Run on exit to avoid "chicken and egg" with init-tls
+easytls_auto_check ()
+{
+	[ $EASYTLS_TRAVIS_CI ] && return 0
+	[ $auto_check_disabled ] && return 0
+	[ $status_disabled_auto_check ] && return 0
+
+	# If inline-index does not exist then do not auto-check
+	[ -f "$EASYTLS_INLINE_INDEX" ] || return 0
+	index_size="$("$EASYTLS_GREP" -c '^.*$' "$EASYTLS_INLINE_INDEX")"
+	[ $index_size -gt 50 ] && \
+		warn "EasyTLS: 50+ .inline files found, use --disable-auto-check"
+
+	auto_check=1
+	easytls_verbose ""
+	easytls_verbose "auto-check"
+
+	# ALL status failures MUST be FATAL in future
+
+	# Check for revoked EasyRSA certs
+	# which still have an inline file
+	# Temporarily disable
+	status invalid || die "inline_auto_check: status invalid error"
+	[ $revoked_mismatch_count -eq 0 ] || \
+		warn "EasyTLS: Invalid .inline files found: Revoked certs."
+
+	# Check serial number for renewed EasyRSA certs
+	# which do not match inline files
+	# Temporarily disable
+	status renewed || die "inline_auto_check: status renewed error"
+	[ $renewed_mismatch_count -eq 0 ] || \
+		warn "EasyTLS: Invalid .inline files found: Renewed certs."
+
+	# Check inline-index hash
+	inline_index_verify_hash || warn "inline-index hash failed."
+
+	# Verify tlskey-index hash
+	tlskey_index_verify_hash || warn "tlskey-index hash failed."
+
+	# Check disabled-list hash
+	disabled_list_verify_hash || warn "disabled-list hash failed."
+
+	unset auto_check
+	easytls_verbose "auto-check complete."
+} # => easytls_auto_check ()
+
+# Generate SHA1 file hash
+generate_file_hash ()
+{
+	# Test for file
+	[ -f "$1" ] || {
+		error_msg "generate_file_hash - Missing file: $1"
+		return 1
+		}
+
+	# hash the file
+	openssl_hash="$("$EASYRSA_OPENSSL" ${EASYTLS_HASH_ALGO} -r "$1")"
+
+	# only need hash
+	generated_hash="${openssl_hash%% *}"
+
+	# Test it
+	"$EASYTLS_PRINTF" '%s' "$generated_hash" | \
+		"$EASYTLS_GREP" -q '[^[:xdigit:]]' && {
+			error_msg "generate_file_hash - Hashing error: $generated_hash"
+			return 1
+			}
+	hash_size=${#generated_hash}
+
+	case ${EASYTLS_HASH_ALGO} in
+	SHA1)
+		[ $hash_size -eq 40 ] || {
+			error_msg "generate_file_hash - Hash size: $generated_hash"
+			return 1
+			}
+	;;
+	SHA256)
+		[ $hash_size -eq 64 ] || {
+			error_msg "generate_file_hash - Hash size: $generated_hash"
+			return 1
+			}
+	;;
+	*)
+		error_msg "generate_file_hash - Unknown algorithm: ${EASYTLS_HASH_ALGO}"
+		return 1
+	;;
+	esac
+
+	# Hash OK
+	return 0
+} # => generate_file_hash ()
+
+
+
+############################################################################
+#
+# EASYTLS STATUS Section
+#
+
+# Show Easy-TLS inlines and Easy-RSA certificates
+# Report invalid inline files due to certificate revokation
+# Report duplicate CNs in EasyRSA due to certificate renewal
+status ()
+{
+	[ $auto_check ] || status_disabled_auto_check=1
+	subsection="$1"
+
+	# Clear lists
+	ersa_valid_cn_list=""
+	ersa_valid_serial_list=""
+	ersa_revoked_cn_list=""
+	ersa_revoked_serial_list=""
+	#easytls_valid_cn_list=""
+	etls_valid_name_list=""
+	etls_valid_serial_list=""
+	#easytls_revoked_serial_list="" # Not used
+	etls_valid_tlskey_list=""
+
+	# Invoke sub-section if specified
+	if [ -n "$subsection" ]
+	then
+		case "$subsection" in
+		val|valid)
+			status_easyrsa_valid || return 1
+		;;
+		rev|revoked)
+			status_easyrsa_revoked || return 1
+		;;
+		inl|inline)
+			#verify_tls_init
+			status_easytls_inline || return 1
+		;;
+		inv|invalid)
+			silent_status=1
+			status_easyrsa_valid || return 1
+			status_easyrsa_revoked || return 1
+			#verify_tls_init
+			status_easytls_inline || return 1
+			unset silent_status
+			status_easytls_invalid || return 1
+		;;
+		ren|renewed)
+			silent_status=1
+			status_easyrsa_valid || return 1
+			status_easyrsa_revoked || return 1
+			#verify_tls_init
+			status_easytls_inline || return 1
+			unset silent_status
+			status_easyrsa_renewed || return 1
+		;;
+		dis|disabled)
+			status_disabled_list || return 1
+		;;
+		tls|tlskeys)
+			status_easytls_tlskeys || return 1
+		;;
+		*)
+			print "Unknown status option"
+			return 1
+		;;
+		esac
+		return 0
+	fi
+
+	print "Easy-RSA: Valid X509 certificates:"
+	status_easyrsa_valid
+	[ -z "$ersa_valid_serial_list" ] && \
+		print "  No Valid X509 certificates found"
+
+	print "Easy-RSA: Revoked X509 certificates:"
+	status_easyrsa_revoked
+	[ -z "$ersa_revoked_serial_list" ] && \
+		print "  No Revoked X509 certificates found"
+
+	#verify_tls_init
+
+	print "Easy-TLS: Known inline files:"
+	status_easytls_inline
+	[ -z "$etls_valid_serial_list" ] && \
+		print "  No inline files found"
+
+	#print "Easy-TLS: Revoked inline files:"
+	#status_easytls_revoked
+
+	print "Easy-TLS: Invalid inline files:"
+	revoked_mismatch_count=0
+	status_easytls_invalid
+	if [ $revoked_mismatch_count -gt 0 ]
+	then
+		print "  Invalid inline files are caused by revoked X509 Certificates"
+		print "  To solve this use: ./easytls remove-inline <filename-base>"
+	else
+		print "  No invalid inline files found"
+	fi
+
+	print "Easy-TLS: .inline serial number mismatches:"
+	renewed_mismatch_count=0
+	status_easyrsa_renewed
+	if [ $renewed_mismatch_count -gt 0 ]
+	then
+		print "  Mismatches are caused by X509 Certificates"
+		print "  which have not been completely renewed by EasyRSA"
+		print "  To solve this use: caution.."
+	else
+		print "  No mismatches found"
+	fi
+
+	print "Easy-TLS: Known TLS keys:"
+	status_easytls_tlskeys
+	[ -z "$etls_valid_tlskey_list" ] && \
+		print "  No TLS keys found"
+
+	easytls_verbose "Status complete"
+} #=> status ()
+
+# Format status output from Easy-RSA
+status_easyrsa_output ()
+{
+	"$EASYTLS_AWK" '{
+		if (NF == 4)
+		print "  Common-Name " $1 "\t  X509-Serial " $2 "\t  Sub-key " $4
+		else
+		print "  Common-Name " $1 "\t  X509-Serial " $2
+		}'
+}
+
+# Format status output from Easy-TLS
+status_easytls_output ()
+{
+	"$EASYTLS_AWK" '{
+		if ( $4 == "NOSUBKEY" )
+		print "  Common-Name " $3 "\t  X509-Serial " $2
+		else
+		print "  Common-Name " $3 "\t  X509-Serial " $2 "\t  Sub-key " $4
+		}'
+}
+
+# Format status CN
+status_cn ()
+{
+	"$EASYTLS_SED" -e 's`^.*/CN=``g' -e 's`/.*$``g'
+}
+
+# Extract Valid records from OpenSSL index.txt by crt_serial
+status_valid_extract_cn ()
+{
+	"$EASYTLS_GREP" "^V.*[[:blank:]]${i}[[:blank:]]" "$EASYRSA_INDEX" | status_cn
+}
+
+# Extract Revoked records from OpenSSL index.txt by crt_serial
+status_revoked_extract_cn ()
+{
+	"$EASYTLS_GREP" "^R.*[[:blank:]]${i}[[:blank:]]" "$EASYRSA_INDEX" | status_cn
+}
+
+# Search ersa revoked serial list for etls valid serial
+status_search_revoked_serial_list()
+{
+	"$EASYTLS_PRINTF" '%s\n' "$ersa_revoked_serial_list" | \
+		"$EASYTLS_GREP" -c "^${inline_serial}$"
+}
+
+# List the invalid inline file record by serial number
+# Do not terminate regex with $ because we need to allow for subs
+status_invalid_inline_list ()
+{
+	"$EASYTLS_GREP" "^${verified_inline_hash}[[:blank:]]${inline_serial}[[:blank:]]" \
+		"$EASYTLS_INLINE_INDEX" | status_easytls_output
+}
+
+# Print Valid certs from Easy-RSA
+status_easyrsa_valid ()
+{
+	[ -f "$EASYRSA_INDEX" ] || return 0
+	ersa_valid_serial_list="$("$EASYTLS_GREP" '^V' "$EASYRSA_INDEX"|"$EASYTLS_AWK" '{print $3}')"
+	for i in $ersa_valid_serial_list
+	do
+		ersa_valid_cn="$(status_valid_extract_cn)"
+		ersa_valid_cn_list="$ersa_valid_cn_list $ersa_valid_cn"
+		[ $silent_status ] || print "$ersa_valid_cn $i" | status_easyrsa_output
+	done
+} # => status_easyrsa_valid ()
+
+# Print Revoked certs from Easy-RSA
+status_easyrsa_revoked ()
+{
+	[ -f "$EASYRSA_INDEX" ] || return 0
+	ersa_revoked_serial_list="$("$EASYTLS_GREP" '^R' "$EASYRSA_INDEX" | "$EASYTLS_AWK" '{print $4}')"
+	for i in $ersa_revoked_serial_list
+	do
+		ersa_revoked_cn="$(status_revoked_extract_cn)"
+		ersa_revoked_cn_list="$ersa_revoked_cn_list $ersa_revoked_cn"
+		[ $silent_status ] || print "$ersa_revoked_cn $i" | status_easyrsa_output
+	done
+} # => status_easyrsa_revoked ()
+
+# Print known inline files from Easy-TLS
+status_easytls_inline ()
+{
+	[ -f "$EASYTLS_INLINE_INDEX" ] || return 0
+	etls_valid_name_list="$(inline_index_common_name_sub_name_list)"
+	etls_valid_serial_list="$(inline_index_serial_number_list)"
+	etls_valid_il_hash_list="$(inline_index_ilhash_number_list)"
+	[ $silent_status ] || \
+		"$EASYTLS_SED" /^#/d "$EASYTLS_INLINE_INDEX" | status_easytls_output
+} # => status_easytls_valid ()
+
+# Print Revoked certs from Easy-TLS
+status_easytls_revoked ()
+{
+	print "  Easy-TLS does not Revoke certificates."
+	print "  If the certificate has been revoked in Easy-RSA then use:"
+	print "  'inline-remove <filename_base>' to delete the inline file."
+} # => status_easytls_revoked ()
+
+# Check Easy-TLS valid vs Easy-RSA revoked
+status_easytls_invalid ()
+{
+	# Temporarily disable
+	#return 0
+
+	[ $index_rebuild ] && [ -z "$etls_valid_il_hash_list" ] && \
+		die "empty etls_valid_il_hash_list"
+
+	revoked_mismatch_count=0
+	for i in $etls_valid_il_hash_list
+	do
+		known_inline_hash="$i"
+		[ -z "$known_inline_hash" ] && die "status invalid: known_inline_hash ?"
+
+		# This needs to handle duplicate-ish names.
+		name="$(inline_index_ilhash_to_common_name)"
+		sub_name="$(inline_index_ilhash_to_sub_name)"
+
+		if [ "$sub_name" = 'NOSUBKEY' ]
+		then
+			# No sub name present
+			inline_file="$EASYTLS_PKI/$name.inline"
+		else
+			# Append '-$sub_name' to inline file name
+			inline_file="$EASYTLS_PKI/$name-$sub_name.inline"
+		fi
+		[ -f "$inline_file" ] || die "Missing inline_file: $inline_file ?"
+
+		inline_serial="$(inline_index_ilhash_to_serial)"
+
+		# Clear inline_hash from previous loop
+		unset inline_hash
+		# Check the .inline HASH
+		verify_inline_hash || die "Failed HASH: $inline_file"
+		# Variable: verified_inline_hash, now exists
+
+		mismatches="$(status_search_revoked_serial_list)"
+		case $mismatches in
+		0)
+		# No mismatches found
+			:
+		;;
+		1)
+			revoked_mismatch_count=$((revoked_mismatch_count+1))
+			[ $auto_check ] || status_invalid_inline_list
+		;;
+		*)
+			warn "EasyRSA duplicate records detected!"
+			[ $((mismatches)) -gt 1 ] || \
+				die "Error in mismatches: $mismatches"
+		;;
+		esac
+	done
+} # => status_easytls_invalid ()
+
+# Print Renewed certs from Easy-RSA if they are inlined
+status_easyrsa_renewed ()
+{
+	# Temporarily disable
+	#return 0
+
+	renewed_mismatch_count=0
+	# REMEMBER: If there is no inline file for a cert
+	# then EasyTLS does not care if the cert is renewed
+
+	for i in $etls_valid_name_list
+	do
+
+	name=$i
+	inline_file="$EASYTLS_PKI/$name.inline"
+	[ -f "$inline_file" ] || die "Not found: inline_file = $inline_file"
+	# Inline serial
+	inline_serial=""
+	inline_crt_serial
+
+	crt_file="$EASYRSA_PKI/issued/$name.crt"
+	if [ -f "$crt_file" ]
+	then
+
+		# Certificate serial
+		crt_serial=""
+		openssl_crt_serial
+
+		if [ "$inline_serial" = "$crt_serial" ]
+		then
+			# serial match, inline is upto Date
+			:
+		else
+			# serial mismatch, cert has been renewed in EasyRSA
+			renewed_mismatch_count=$((renewed_mismatch_count+1))
+			if [ $silent_status ]
+			then
+				# No output
+				:
+			else
+				[ $auto_check ] || {
+				print "  Common-Name $name"
+				print "    Inline-Serial $inline_serial"
+				print "    Cert-Serial   $crt_serial"
+				}
+			fi
+		fi
+	else
+		# EasyRSA renew is broken
+		# cert is probably revoked
+		:
+	fi
+
+	# End of for loop
+	done
+
+} # => status_easyrsa_renewed ()
+
+# List known TLS keys
+status_easytls_tlskeys ()
+{
+	#"$EASYTLS_CAT" "$EASYTLS_KEY_INDEX"
+	#return 0
+
+	while read -r tlskey_serial cert_serial common_name sub_key
+	do
+		# Skip heading
+		[ "$tlskey_serial" = "#" ] && continue
+
+		# Validate - Can not open this key so these checks are minor
+		key_file="$EASYTLS_PKI/$common_name-tls-crypt-v2.key"
+		metadata_debug="$EASYTLS_MD_DIR/$common_name-tls-crypt-v2.metadata"
+		full_name="${common_name}-${sub_key}"
+		[ "$sub_key" = 'NOSUBKEY' ] || {
+			key_file="$EASYTLS_PKI/$full_name-tls-crypt-v2.key"
+			metadata_debug="$EASYTLS_MD_DIR/$full_name-tls-crypt-v2.metadata"
+			}
+		[ -f "$key_file" ] || "$EASYTLS_PRINTF" '%s\t'   "  Missing key"
+		if  [ "$tlskey_serial" = '0000000000000000000000000000000000000000' ]
+		then
+			# Must be a server key with no metadata
+			# All server key tls-serial are only 40 chars, no need for SHA256
+			"$EASYTLS_PRINTF" '%s\t'   "  Server"
+		else
+			[ -f "$metadata_debug" ] || "$EASYTLS_PRINTF" '%s\t'   "Missing metadata"
+			"$EASYTLS_PRINTF" '%s\t'   "    Client"
+		fi
+
+		"$EASYTLS_PRINTF" '%s\t'   "Common-Name $common_name"
+		#"$EASYTLS_PRINTF" '%s\t'   "tlskey-serial $tlskey_serial"
+		#"$EASYTLS_PRINTF" '%s\t'   "cert-serial $cert_serial"
+		[ "$sub_key" = 'NOSUBKEY' ] || "$EASYTLS_PRINTF" '%s\t' "sub-key $sub_key"
+		"$EASYTLS_PRINTF" '\n'
+
+		# List
+		etls_valid_tlskey_list="$etls_valid_tlskey_list $tlskey_serial"
+	done < "$EASYTLS_KEY_INDEX"
+}
+
+# List disabled client keys
+status_disabled_list()
+{
+	"$EASYTLS_CAT" "$EASYTLS_DISABLED_LIST"
+}
+
+# Verify certificate purpose
+verify_cert_purpose ()
+{
+	"$EASYRSA_OPENSSL" x509 -in "$1" -noout -purpose | "$EASYTLS_GREP" -q "$2"
+
+	#Purpose="${2#?}"
+	#"$EASYRSA_OPENSSL" x509 -in "$1" -noout -purpose | \
+	#	"$EASYTLS_GREP" -q "SSL .${Purpose} : Yes"
+} # => verify_cert_purpose ()
+
+# Cut to only certificate enddate
+crt_expire_date ()
+{
+	crt_expire="$("$EASYRSA_OPENSSL" x509 -in "$crt_file" -noout -enddate)"
+	crt_expire="${crt_expire##*=}"
+} # => crt_expire_date ()
+
+# Extract enddate from .inline certificate
+inline_expire_date ()
+{
+	inline_expire="$("$EASYTLS_GREP" '^[[:blank:]]\+Not After : ' "$inline_file")"
+	inline_expire="${inline_expire##*: }"
+} # => inline_expire_date ()
+
+# Get a list of commonNames from inline-index
+#inline_index_common_name_list ()
+#{
+#	"$EASYTLS_AWK" '{if ($1 ~ /[^#]/) print $1 " "}' "$EASYTLS_INLINE_INDEX"
+#}
+
+# Get a list of serial_numbers from inline-index
+inline_index_serial_number_list ()
+{
+	"$EASYTLS_AWK" '{if ($1 ~ /[^#]/) print $2 " "}' "$EASYTLS_INLINE_INDEX"
+}
+
+# Get a list of inline hashes from inline-index
+inline_index_ilhash_number_list ()
+{
+	"$EASYTLS_AWK" '{if ($1 ~ /[^#]/) print $1 " "}' "$EASYTLS_INLINE_INDEX"
+}
+
+# Get a list of Common_name + Sub-key name from inline-index
+inline_index_common_name_sub_name_list ()
+{
+	"$EASYTLS_AWK" '{if($1 ~ /[^#]/)
+		 {if($4 == "NOSUBKEY") {print $3 " ";} else {print $3 "-" $4 " ";}}
+		 }' "$EASYTLS_INLINE_INDEX"
+}
+
+# Get x509 certificate expiry Date
+cert_expire ()
+{
+	name="$1"
+
+	verify_ca_init
+
+	if [ "$name" = "ca" ]
+	then
+		crt_file="$EASYRSA_PKI/ca.crt"
+		[ -f "$crt_file" ] || die "Missing: $crt_file"
+		crt_expire_date
+		print " Certificate: ca.crt   Expire-date: $crt_expire"
+	elif [ -n "$name" ]
+	then
+		crt_file="$EASYRSA_PKI/issued/$name.crt"
+		[ -f "$crt_file" ] || die "Missing: $crt_file"
+		crt_expire_date
+		print " Certificate: $name.crt   Expire-date: $crt_expire"
+	else
+		easyrsa_valid_list="$("$EASYTLS_GREP" '^V' "$EASYRSA_INDEX"|status_cn)"
+		for name in $easyrsa_valid_list
+		do
+			crt_file="$EASYRSA_PKI/issued/$name.crt"
+			[ -f "$crt_file" ] || die "Missing: $crt_file"
+			crt_expire_date
+		print " Certificate: $name.crt   Expire-date: $crt_expire"
+		done
+		crt_file="$EASYRSA_PKI/ca.crt"
+		[ -f "$crt_file" ] || die "Missing: $crt_file"
+		crt_expire_date
+		print " Certificate: ca.crt   Expire-date: $crt_expire"
+	fi
+} # => cert_expire ()
+
+# Get inline certificate expiry Date
+inline_expire ()
+{
+	name="$1"
+
+	verify_tls_init
+
+	if [ -n "$name" ]
+	then
+		inline_file="$EASYTLS_PKI/$name.inline"
+		[ -f "$inline_file" ] || die "Missing: $inline_file"
+		inline_expire_date
+		print " Certificate: $name.inline   Expire-date: $inline_expire"
+	else
+	# Get a list of Valid names from easytls-inline-index
+	etls_valid_name_list="$(inline_index_common_name_sub_name_list)"
+		for name in $etls_valid_name_list
+		do
+			inline_file="$EASYTLS_PKI/$name.inline"
+			[ -f "$inline_file" ] || die "Missing: $inline_file"
+			inline_expire_date
+		print " Inline-file: $name.inline   Expire-date: $inline_expire"
+		done
+	fi
+} # => inline_expire ()
+
+# Keep an inline-index file for inline certs to manage revoke/renew
+inline_index_update ()
+{
+	update_index_action="$1"
+
+	verify_tls_init
+
+	# Verify inline-index Hash
+	inline_index_verify_hash || {
+		error_msg "inline-index is corrupt"
+		return 1
+		}
+
+	case "$update_index_action" in
+	add)
+		# Add the inline_serial not the crt_serial
+		# Inline serial
+		inline_serial=""
+		inline_crt_serial
+
+		# If this HASH is set then another function is responsible for it
+		# TODO: Is this necessary, maybe for rebuilding inline-index ?
+		#[ "$inline_hash" ] && \
+		#	die "Do not allow a HASH here: inline_index_update add"
+
+		# Create new inline file HASH
+		generate_file_hash "$inline_file" || {
+			error_msg "inline_index_update add: Failed to hash: $inline_file"
+			return 1
+			}
+
+		# Set new inline file HASH
+		current_inline_hash="$generated_hash"
+
+		# Create new record
+		new_record="$current_inline_hash $inline_serial $name $TLSKEY_SUBNAME"
+
+		# Append tlskey-serial (Clients only)
+		new_record="$new_record $tlskey_serial"
+
+		easytls_verbose "  ADD: $new_record"
+
+		# Write new record
+		"$EASYTLS_PRINTF" "%s\n" "$new_record" >> "$EASYTLS_INLINE_INDEX" || {
+			error_msg "Failed to update $EASYTLS_INLINE_INDEX"
+			return 1
+			}
+	;;
+	del)
+		# Note: Inline HASH is unique, regardless of --sub-key-name
+		# Identify old record
+		old_record="${verified_inline_hash}[[:blank:]]${inline_serial}[[:blank:]]"
+
+		# Find old record
+		"$EASYTLS_GREP" -q "^${old_record}" "$EASYTLS_INLINE_INDEX" || {
+			error_msg "inline_index_update del: Failed to find: $old_record"
+			return 1
+			}
+
+		easytls_verbose "  DEL: $old_record"
+
+		# Remove old record
+		"$EASYTLS_SED" -i -e "/^${old_record}.*$/d" "$EASYTLS_INLINE_INDEX" || {
+			error_msg "inline_index_update del: Failed write"
+			return 1
+			}
+	;;
+	*)
+		error_msg "Unknown index action: $update_index_action"
+		return 1
+	;;
+	esac
+
+	# Keep a hash of the inline-index
+	inline_index_save_hash || {
+		error_msg "Failed to update inline-index hash"
+		return 1
+		}
+
+	easytls_verbose "Inline Index Update complete!"
+
+	# Inline Index Update complete
+	return 0
+} # => inline_index_update ()
+
+# Verify current inline-index hash
+inline_index_verify_hash ()
+{
+	[ $verify_file_hash_disabled ] && return 0
+
+	# If the inline-index does not exist then TLS has not been initialised
+	[ -f "$EASYTLS_INLINE_INDEX" ] || return 0
+
+	# If the inline-index exists then the hash must exist
+	[ -f "$EASYTLS_IL_INDEX_HASH" ] || {
+		error_msg "inline_index_verify_hash - Missing index file."
+		return 1
+		}
+
+	# Read the saved hash
+	inline_index_saved_hash="$("$EASYTLS_CAT" "$EASYTLS_IL_INDEX_HASH")"
+
+	# Generate the current hash
+	generate_file_hash "$EASYTLS_INLINE_INDEX" || {
+		error_msg "inline_index_verify_hash - generate_file_hash"
+		return 1
+		}
+
+	inline_index_current_hash="$generated_hash"
+	# Verify hash match
+	[ "$inline_index_saved_hash" = "$inline_index_current_hash" ] || {
+		error_msg "inline_index_verify_hash - Verify hash match"
+		return 1
+		}
+
+	easytls_verbose "Inline-index hash check OK"
+	return 0
+}
+
+# Save new inline-index hash
+inline_index_save_hash ()
+{
+	# Generate the current hash
+	generate_file_hash "$EASYTLS_INLINE_INDEX" || {
+		error_msg "inline_index_save_hash - Generate the current hash"
+		return 1
+		}
+
+	inline_index_current_hash="$generated_hash"
+	# Save the current hash
+	"$EASYTLS_PRINTF" '%s' "$inline_index_current_hash" > "$EASYTLS_IL_INDEX_HASH" || {
+		error_msg "inline_index_save_hash - Save the current hash"
+		return 1
+		}
+
+	easytls_verbose "Inline-index hash save OK"
+	return 0
+}
+
+# Check inline-file hash
+verify_inline_hash ()
+{
+	# This is a check so check everything here
+	# every value and file must exist at this time
+	# Try to logically illiminate the need for these checks
+
+	[ -z "$name" ] && \
+		die "verify_inline_hash: Missing value: name"
+	#easytls_verbose "name: $name"
+
+	# May not require this
+	#[ -z "$crt_serial" ] && \
+	#	die "verify_inline_hash: Missing value: crt_serial"
+
+	# Must have inline_serial
+	[ -z "$inline_serial" ] && \
+		die "verify_inline_hash: Missing value: inline_serial"
+	#easytls_verbose "inline_serial: $inline_serial"
+
+	# Should not have this HASH, that is the reason to do this check
+	# If we already have a HASH then something else is wrong
+	[ -n "$inline_hash" ] && \
+		die "verify_inline_hash: Found value: inline_hash $inline_hash"
+	#easytls_verbose "inline_hash: $inline_hash"
+
+	# Already have inline_serial so this file MUST exist so remove test
+	# Not so during an index rebuild
+	[ -z "$inline_file" ] && \
+		die "verify_inline_hash: Missing value: inline_file"
+	[ -f "$inline_file" ] || \
+		die "verify_inline_hash: Missing file: $inline_file"
+	#easytls_verbose "inline_file: $inline_file"
+
+	# generate current file HASH
+	generate_file_hash "$inline_file" || \
+		die "verify_inline_hash: Failed to hash: $inline_file"
+	real_hash="$generated_hash"
+	#easytls_verbose "real_hash: $generated_hash"
+
+	# Search for current HASH
+	#find_hash="$(inline_index_search_inline_hash)"
+
+	if inline_index_search_inline_hash
+	then
+		# hash OK
+		verified_inline_hash="$real_hash"
+		return 0
+	fi
+
+#	case "$find_hash" in
+#	0)
+#		# HASH check failed
+#		help_note="HASH incorrect for: $inline_file"
+#	;;
+#	1)
+#		# This is the correct HASH so set it
+#		# If this does not work in another function
+#		# then control it from that function
+#		inline_hash="$real_hash"
+#
+#		# HASH is correct
+#		return 0
+#	;;
+#	*) help_note="HASH check unknown error: $find_hash"
+#	;;
+#	esac
+
+	# There is only one way out of this..
+	error_msg "Inline file hash failed"
+	return 1
+} # => verify_inline_hash ()
+
+# Get serial number from inline index file using Common name as key
+#inline_index_common_name_to_serial ()
+#{
+	# TODO: This could be effected by duplicate names from easyrsa
+	# This function is defunct but keep it for the EasyRSA early warning
+	# Other functions could be effected
+	# https://github.com/TinCanTech/easy-tls/issues/48
+	# Maybe close this as "EasyRSA leaves an indeterminate grace period for
+	# partially renewed certs to be completely renewed by revoking the old cert"
+	# EasyTLS can work with that
+	#"$EASYTLS_GREP" "^${name}[[:blank:]].*$" \
+	#	"$EASYTLS_INLINE_INDEX" | "$EASYTLS_AWK" '{print $2}'
+
+	#script="{if(\$1 ~ /^${name}\$/) print \$2}"
+	#"$EASYTLS_AWK" "$script" "$EASYTLS_INLINE_INDEX"
+	#unset script
+#}
+
+# Get Common name from inline index file using serial number as key
+#inline_index_serial_to_common_name ()
+#{
+#	Target_File="${1:-"$EASYTLS_INLINE_INDEX"}"
+#	script="{if(\$2 ~ /^${inline_serial}\$/) print \$1}"
+#	"$EASYTLS_AWK" -P "$script" "$Target_File"
+#	unset script
+#}
+
+# Get Common name from inline index file using inline hash as key
+inline_index_ilhash_to_common_name ()
+{
+	script="{if(\$1 ~ /^${known_inline_hash}\$/) print \$3}"
+	"$EASYTLS_AWK" "$script" "$EASYTLS_INLINE_INDEX"
+	unset script
+}
+
+# Get sub name from inline index file using inline hash as key
+inline_index_ilhash_to_sub_name ()
+{
+	script="{if(\$1 ~ /^${known_inline_hash}\$/) print \$4}"
+	"$EASYTLS_AWK" "$script" "$EASYTLS_INLINE_INDEX"
+	unset script
+}
+
+# Get cert serial number from inline index file using inline hash as key
+inline_index_ilhash_to_serial ()
+{
+	script="{if(\$1 ~ /^${known_inline_hash}\$/) print \$2}"
+	"$EASYTLS_AWK" "$script" "$EASYTLS_INLINE_INDEX"
+	unset script
+}
+
+# Search inline-index for inline-file hash
+inline_index_search_inline_hash ()
+{
+	# Do not need to search for --sub-key-name
+	# because inline file HASH ${real_hash} is unique
+	"$EASYTLS_GREP" -q "^${real_hash}[[:blank:]]${inline_serial}[[:blank:]]" \
+		"$EASYTLS_INLINE_INDEX"
+}
+
+# Does this .inline file name already have an index record
+#inline_index_search_valid_cn_list ()
+#{
+#	"$EASYTLS_PRINTF" '%s\n' "$etls_inline_record_list" | \
+#		"$EASYTLS_GREP" -c "[[:blank:]]${name}[[:blank:]]"
+#}
+
+# Dragon be here ! - Extract CN from OpenSSL index.txt
+#inline_index_openssl_valid_cn_list ()
+#{
+#	"$EASYTLS_GREP" '^V.*$' "$EASYRSA_INDEX" | \
+#		"$EASYTLS_SED" -e 's`^.*/CN=``g' -e 's`/emailAddress=.*$``g'
+#}
+
+# Get common_name from inline file
+inline_crt_common_name ()
+{
+	inline_common_name="$("$EASYTLS_GREP" '^# Common name: .*$' "$inline_file")"
+	inline_common_name="${inline_common_name##*name: }"
+}
+
+# Get serial number from inline file
+inline_crt_serial ()
+{
+	inline_serial="$("$EASYTLS_GREP" '^# X509 serial: .*$' "$inline_file")"
+	inline_serial="${inline_serial##*serial: }"
+}
+
+# Get and format OpenSSL serial number output
+openssl_crt_serial ()
+{
+	# get the serial number of the certificate -> serial=XXXX
+	crt_serial="$("$EASYRSA_OPENSSL" x509 -in "$crt_file" -noout -serial)"
+	# remove the serial= part -> we only need the XXXX part
+	crt_serial=${crt_serial##*=}
+}
+
+# Extract the CommonName from OpenSSL -subject
+openssl_crt_cn ()
+{
+	"$EASYRSA_OPENSSL" x509 -in "$crt_file" \
+		-noout -subject -nameopt sep_multiline | \
+		"$EASYTLS_GREP" '^[[:blank:]]*CN=.*$' | \
+		"$EASYTLS_SED" 's/^[[:blank:]]*CN=//g'
+}
+
+# Check inline hash and Copy inline to stdout
+inline_show ()
+{
+	[ $# -ge 1 ] || die "Required option(s): <filename_base>"
+
+	name="$1"
+	inline_file="$EASYTLS_PKI/$name.inline"
+
+	[ "$TLSKEY_SUBNAME" = 'NOSUBKEY' ] || {
+		inline_file="$EASYTLS_PKI/$name-$TLSKEY_SUBNAME.inline"
+		}
+
+	verify_tls_init
+
+	[ -f "$inline_file" ] || die "Missing: $inline_file"
+
+	# Inline serial
+	inline_serial=""
+	inline_crt_serial
+
+	#Check inline hash
+	verify_inline_hash || die "Failed HASH: $inline_file"
+
+	# Copy inline to stdout
+	"$EASYTLS_CAT" "$inline_file" || die "Failed to open: $inline_file"
+} # => inline_show ()
+
+# Remove .inline file
+remove_inline ()
+{
+	[ $# -ge 1 ] || die "Required option(s): <filename_base>"
+
+	name="$1"
+	inline_file="$EASYTLS_PKI/$name.inline"
+
+	# This does not over-write a previous setting
+	#set_var TLSKEY_SUBNAME	'NOSUBKEY'
+
+	[ "$TLSKEY_SUBNAME" = 'NOSUBKEY' ] || {
+		inline_file="$EASYTLS_PKI/$name-$TLSKEY_SUBNAME.inline"
+		}
+
+	# standardize this
+	#[ $TLSKEY_SUBNAME ] && \
+	#	inline_file="$EASYTLS_PKI/$name-$TLSKEY_SUBNAME.inline"
+
+	verify_tls_init
+
+	[ -f "$inline_file" ] || die "Missing: $inline_file"
+
+	# Get cert serial number from inline file
+	inline_serial=""
+	inline_crt_serial
+
+	# Check .inline HASH prior to removal
+	verify_inline_hash || die "inline_remove Failed HASH: $inline_file"
+
+	# Confirm remove
+	confirm  "Remove inline file ? " "yes" "Remove: $inline_file"
+
+	"$EASYTLS_RM" "$inline_file" || die "Failed to remove: $inline_file"
+
+	# Update the index first
+	inline_index_update del || die "Failed to update inline-index"
+
+	# Inline file and record deleted - Forget the HASH
+	# Otherwise 'inline_renew add' still has the HASH
+	# Logically, this *cannot* be removed -- tct
+	unset inline_hash
+
+	[ ! $silent_remove ] && notice "Inline file removed: $inline_file"
+
+	# explicitly return success for callers
+	return 0
+
+} # => inline_remove ()
+
+# Rebuild inline index
+inline_index_rebuild ()
+{
+	# Temporarily disable
+	return 0
+
+	# TODO
+	# TODO WARNING, inline_index_rebuild is a work in progress
+	# TODO
+
+	verify_tls_init
+
+	# Do not over write current easytls-inline-index.txt.backup
+	[ -f "$EASYTLS_INLINE_INDEX.backup" ] && \
+		die "Backup file already exists: $EASYTLS_INLINE_INDEX.backup"
+
+	# Do not over write current easytls-inline-index.hash.backup
+	[ -f "$EASYTLS_IL_INDEX_HASH.backup" ] && \
+		die "Backup file already exists: $EASYTLS_IL_INDEX_HASH.backup"
+
+	# Warn!
+	confirm "Rebuild inline index file ? " "yes" \
+		"WARNING: You are about to rebuild easytls-index.txt"
+
+	# Backup current easytls-inline-index.txt
+	"$EASYTLS_CP" "$EASYTLS_INLINE_INDEX" "$EASYTLS_INLINE_INDEX.backup" || \
+		die "Failed to backup: $EASYTLS_INLINE_INDEX"
+
+	# Backup current easytls-inline-index.hash.backup
+	"$EASYTLS_CP" "$EASYTLS_IL_INDEX_HASH" "$EASYTLS_IL_INDEX_HASH.backup" || \
+		die "Failed to backup: $EASYTLS_IL_INDEX_HASH"
+
+	# Check OpenSSL index.txt
+	[ -f "$EASYRSA_INDEX" ] || die "Missing: $EASYRSA_INDEX"
+
+	# Flag for functions which need to know the index is being rebuilt
+	index_rebuild=1
+
+	# Get list of inline file names by extracting CN and sub from index
+	etls_inline_CNsub_name_list="$(inline_index_common_name_sub_name_list)"
+
+	# Create tls dir index file
+	head_text="# EastTLS inline-index - Created: $(date)"
+	"$EASYTLS_PRINTF" '%s\n' "$head_text" > "$EASYTLS_INLINE_INDEX" || \
+		inline_index_rebuild_reset "Failed to create inline-index"
+
+	# Create inline-index hash file
+	inline_index_save_hash || \
+		inline_index_rebuild_reset "Failed to create inline-index Hash."
+
+	# Create records from EasyTLS index names
+	for i in $etls_inline_CNsub_name_list
+	do
+		# Reset flag
+		unset add_inline_record
+
+		# Clear the previous HASH
+		unset inline_hash
+
+		# THIS CAN GO
+		# If the name is not a single word then the certificate
+		# has been renewed in EasyRSA, which means:
+		# There are two Valid record in OpenSSL index.txt
+		# with the same CommonName
+		# Mitigate this disaster here
+		#name="$("$EASYTLS_PRINTF" "%s" "$i" | "$EASYTLS_AWK" 1 ORS=' ')"
+		#name="${name%% *}"
+
+		inline_file="$EASYTLS_PKI/$i.inline"
+		[ -f "$inline_file" ] || \
+			inline_index_rebuild_reset "Missing Inline file: $inline_file"
+
+		inline_serial=""
+		inline_crt_serial
+		easytls_verbose "inline_serial: ^$inline_serial^"
+		[ -z "$inline_serial" ] && \
+			inline_index_rebuild_reset "inline_index_rebuild: No inline_serial"
+
+		inline_common_name=""
+		inline_crt_common_name
+		easytls_verbose "inline_common_name: ^$inline_common_name^"
+		[ -z "$inline_common_name" ] && \
+			inline_index_rebuild_reset \
+				"inline_index_rebuild: No inline_common_name"
+
+		if [ "$i" = "$inline_common_name" ]
+		then
+			unset sub_name
+			unset TLSKEY_SUBNAME
+		else
+			# This is ugly and needs to be re-thought
+			sub_name="${i##"${inline_common_name}-"}"
+			TLSKEY_SUBNAME="$sub_name"
+		fi
+
+		name="$inline_common_name"
+		[ -z "$name" ] && inline_index_rebuild_reset "No name"
+		easytls_verbose "name: ^$name^"
+
+		# If the x509 cert is missing the inline file still has a copy.
+		# The cert may have been revoked and this will create an invalid
+		# record which can be removed with `inline-remove`
+		crt_file="$EASYRSA_PKI/issued/$name.crt"
+		[ -f "$crt_file" ] || warn "Missing crt_file: $crt_file"
+
+		# If there is an inline file for this name
+		# then recreate the inline easytls-index record
+		# EasyTLS User can remove/create a new inline file
+		# Note: The extra space ..
+		[ -f "$inline_file" ] && {
+			add_inline_record=1
+			etls_inline_record_list="$etls_inline_record_list $name "
+			}
+
+		# Add the record
+		# TODO: Add die here
+		[ $add_inline_record ] && inline_index_update add
+		:
+	done
+
+	# Inform
+	notice "Inline index file successfully rebuilt: $EASYTLS_INLINE_INDEX"
+	notice "Use 'easytls status' to confirm."
+	print
+} # => inline_index_rebuild ()
+
+inline_index_rebuild_reset ()
+{
+	"$EASYTLS_CP" -f "$EASYTLS_INLINE_INDEX.backup" "$EASYTLS_INLINE_INDEX"
+	"$EASYTLS_RM" -f "$EASYTLS_INLINE_INDEX.backup"
+
+	"$EASYTLS_CP" -f "$EASYTLS_IL_INDEX_HASH.backup" "$EASYTLS_IL_INDEX_HASH"
+	"$EASYTLS_RM" -f "$EASYTLS_IL_INDEX_HASH.backup"
+
+	die "Inline index rebuild failed."
+}
+
+
+
+############################################################################
+#
+# EASYTLS TLS-Crypt-V2 Key management Section
+#
+
+# Update tlskey-index
+tlskey_index_update ()
+{
+	update_index_action="$1"
+
+	verify_tls_init
+
+	# Verify tlskey-index Hash
+	tlskey_index_verify_hash || {
+		error_msg "tlskey-index is corrupt"
+		return 1
+		}
+
+	case "$update_index_action" in
+	add)
+		# Create new record
+		new_record="$tlskey_serial $crt_serial $cli_name $TLSKEY_SUBNAME"
+
+		easytls_verbose "  ADD: $new_record"
+
+		# Write new record
+		"$EASYTLS_PRINTF" '%s\n' "$new_record" >> "$EASYTLS_KEY_INDEX" || {
+			error_msg "Failed to update tlskey-index"
+			return 1
+			}
+	;;
+	del)
+		# Note:
+		# Client tlskey_serial is unique, regardless of --sub-key-name
+		# Server tlskey_serial is always 0000000000000000000000000000000000000000
+		# Identify old record
+		old_record="${tlskey_serial}[[:blank:]]${cert_serial}[[:blank:]]"
+
+		easytls_verbose "  DEL: $old_record"
+
+		# Find old record - Do not $ terminate regex
+		"$EASYTLS_GREP" -q "^${old_record}" "$EASYTLS_KEY_INDEX" || {
+			error_msg "tlskey_index_update del: Failed to find old record"
+			return 1
+			}
+
+		# Remove old record
+		"$EASYTLS_SED" -i -e "/^${old_record}.*$/d" "$EASYTLS_KEY_INDEX" || {
+			error_msg "tlskey_index_update del: Failed write"
+			return 1
+			}
+	;;
+	rehash)
+		# Fall through to save hash
+		:
+			# Disabled - currently..
+			error_msg "tlskey_index_update rehash: Failed."
+			return 1
+	;;
+	*)
+		error_msg "Unknown index action: $update_index_action"
+		return 1
+	;;
+	esac
+
+	# Keep a hash of the tlskey-index
+	tlskey_index_save_hash || {
+		error_msg "Failed to update tlskey-index hash"
+		return 1
+		}
+
+	easytls_verbose "tlskey-index Update complete!"
+} # => tlskey_index_update ()
+
+# Verify current tlskey-index hash
+tlskey_index_verify_hash ()
+{
+	[ $verify_file_hash_disabled ] && return 0
+
+	# This can go .. use verify_init_tls correctly
+	[ -f "$EASYTLS_KEY_HASH" ] || {
+		error_msg "tlskey_index_verify_index_hash - Missing index file."
+		return 1
+		}
+
+	# Read the saved hash
+	tlskey_index_saved_hash="$("$EASYTLS_CAT" "$EASYTLS_KEY_HASH")"
+
+	# Generate the current hash
+	generate_file_hash "$EASYTLS_KEY_INDEX" || {
+		error_msg "tlskey_index_verify_hash - generate_file_hash"
+		return 1
+		}
+
+	# Set the current hash
+	tlskey_index_current_hash="$generated_hash"
+
+	# Verify hash match
+	[ "$tlskey_index_saved_hash" = "$tlskey_index_current_hash" ] || {
+		error_msg "tlskey_index_verify_hash - Verify hash match"
+		error_msg "tlskey_index_saved_hash: $tlskey_index_saved_hash"
+		error_msg "tlskey_index_current_hash: $tlskey_index_current_hash"
+		return 1
+		}
+
+	easytls_verbose "tlskey-index hash check OK"
+} # => tlskey_index_verify_hash ()
+
+# Save tlskey-index hash
+tlskey_index_save_hash ()
+{
+	# Generate the current hash
+	generate_file_hash "$EASYTLS_KEY_INDEX" || {
+		error_msg "tlskey_index_save_hash - Generate the current hash"
+		return 1
+		}
+
+	# Set the current hash
+	tlskey_index_current_hash="$generated_hash"
+
+	# Save the current hash
+	"$EASYTLS_PRINTF" '%s' "$tlskey_index_current_hash" > "$EASYTLS_KEY_HASH" || {
+		error_msg "tlskey_index_save_hash - Save the current hash"
+		return 1
+		}
+
+	easytls_verbose "tlskey-index hash save OK"
+} # => tlskey_index_save_hash ()
+
+#Insert a serial number
+tls_crypt_v2_serial_number ()
+{
+	# Why SHA1 ?
+	# 1. An attacker will have to decrypt their client key.
+	#    Otherwise, they only have access to the metadata.
+	# 2. An attacker will have to calculate a SHA1 collision.
+	#    Collision must still conform to correctly formatted metadata.
+	# 3. An attacker will have to build a new client key.
+	#    Using the real server key, still not exposed ..
+	# 4. The new client key will have to expliot the server, somehow ?
+	#    The server is still protected by real X509.
+	# 5. Even with current technology, SHA1 is still 2^61
+	# Considering the risk this key exposes, it seems a bit far fetched
+	# that breaking this key will have any value for anybody.
+	# It is trillions of times easier to steal the server key.
+	# If you want to get really picky then please open an issue.
+
+	# Prepend random padding to metadata
+	metadata_padding="$("$EASYRSA_OPENSSL" rand -hex 4)"
+	metadata="${metadata_padding}--${metadata}"
+
+	# What ever OpenSSL says ..
+	md_hash="$("$EASYTLS_PRINTF" '%s' "$metadata"|"$EASYRSA_OPENSSL" ${EASYTLS_HASH_ALGO} -r)"
+
+	# Assume it is a valid HASH
+	generated_hash="${md_hash%% *}"
+
+	# Test it
+	"$EASYTLS_PRINTF" '%s' "$generated_hash" | \
+		"$EASYTLS_GREP" -q '[^[:xdigit:]]' && {
+			error_msg "tls_crypt_v2_serial_number - Hashing error: $generated_hash"
+			return 1
+			}
+	hash_size=${#generated_hash}
+
+	case ${EASYTLS_HASH_ALGO} in
+	SHA1)
+		[ $hash_size -eq 40 ] || {
+			error_msg "tls_crypt_v2_serial_number - Hash size: $generated_hash"
+			return 1
+			}
+	;;
+	SHA256)
+		[ $hash_size -eq 64 ] || {
+			error_msg "tls_crypt_v2_serial_number - Hash size: $generated_hash"
+			return 1
+			}
+	;;
+	*)
+		error_msg "tls_crypt_v2_serial_number - Unknown algorithm: ${EASYTLS_HASH_ALGO}"
+		return 1
+	;;
+	esac
+
+	# Check for duplicate
+	"$EASYTLS_GREP" -q "^${generated_hash}[[:blank:]]" "$EASYTLS_KEY_INDEX" && {
+		error_msg "SHA1 duplicate found! -- Please report this."
+		return 1
+		}
+
+	# Set this valid hash as tlskey_serial
+	tlskey_serial="${generated_hash}"
+	metadata="${tlskey_serial}-${metadata}"
+} # => tls_crypt_v2_serial_number ()
+
+# tlskey name subkeyname to tls serial
+tlskey_index_full_name_to_tls_serial ()
+{
+	script="{if(\$3 ~ /${name}/ && \$4 ~ /${TLSKEY_SUBNAME}/) print \$1}"
+	"$EASYTLS_AWK" "$script" "$EASYTLS_KEY_INDEX"
+	unset script
+}
+
+# tlskey name subkeyname to x509 serial
+tlskey_index_full_name_to_x509_serial ()
+{
+	script="{if(\$3 ~ /${name}/ && \$4 ~ /${TLSKEY_SUBNAME}/) print \$2}"
+	"$EASYTLS_AWK" "$script" "$EASYTLS_KEY_INDEX"
+	unset script
+}
+
+# tlskey verify serial number is valid
+verify_cert_serial ()
+{
+	"$EASYTLS_PRINTF" '%s' "$cert_serial" | "$EASYTLS_GREP" -q '[[:blank:][:punct:]]' && {
+		error_msg "verify_cert_serial - Invalid serial: $cert_serial"
+		return 1
+		}
+	"$EASYTLS_PRINTF" '%s' "$cert_serial" | "$EASYTLS_GREP" -q '^[[:xdigit:]]\+$' || {
+		error_msg "verify_cert_serial - Invalid serial: $cert_serial"
+		return 1
+		}
+}
+
+# tlskey verify serial number is valid
+verify_tlskey_serial ()
+{
+	"$EASYTLS_PRINTF" '%s' "$tlskey_serial" | "$EASYTLS_GREP" -q '[[:blank:][:punct:]]' && {
+		error_msg "verify_tlskey_serial - Invalid serial: $tlskey_serial"
+		return 1
+		}
+	"$EASYTLS_PRINTF" '%s' "$tlskey_serial" | "$EASYTLS_GREP" -q '^[[:xdigit:]]\+$' || {
+		error_msg "verify_tlskey_serial - Invalid serial: $tlskey_serial"
+		return 1
+		}
+}
+
+# # Verify that this key is no longer in use
+tlskey_verify_in_use ()
+{
+	"$EASYTLS_GREP" -q "^.*[[:blank:]]${tlskey_serial}$" "$EASYTLS_INLINE_INDEX"
+}
+
+# Remove a TLS-Crypt-V2 Client key and update the tlskey-index
+remove_tlskey ()
+{
+	[ $# -ge 1 ] || die "Required option(s): <filename_base>"
+
+	verify_tls_init
+
+	name="$1"
+	cert_file="$EASYRSA_PKI/issued/$name.crt"
+	tlskey_file="$EASYTLS_PKI/$name-tls-crypt-v2.key"
+	metadata_file="$EASYTLS_MD_DIR/$name-tls-crypt-v2.metadata"
+
+	[ "$TLSKEY_SUBNAME" = 'NOSUBKEY' ] || {
+		tlskey_file="$EASYTLS_PKI/$name-$TLSKEY_SUBNAME-tls-crypt-v2.key"
+		metadata_file="$EASYTLS_MD_DIR/$name-$TLSKEY_SUBNAME-tls-crypt-v2.metadata"
+		}
+
+	# Check required files (No metadata_file for servers)
+	[ -f "$cert_file" ] || die "Missing file: $cert_file"
+	[ -f "$tlskey_file" ] || die "Missing: $tlskey_file"
+
+	# Get tlskey serial number from tlskey-index
+	tlskey_serial="$(tlskey_index_full_name_to_tls_serial)"
+
+	# Get tlskey serial number from tlskey-index
+	cert_serial="$(tlskey_index_full_name_to_x509_serial)"
+
+	# Verify this tlskey-serial
+	verify_tlskey_serial || die "verify_tlskey_serial: failed"
+
+	# Verify this cert-serial
+	verify_cert_serial || die "verify_cert_serial: failed"
+
+	# Check this tlskey is not in use by an .inline file
+	help_note="Remove the inline file which uses this key."
+	tlskey_verify_in_use && die "This key is still in use: $tlskey_file"
+	unset help_note
+
+	# Confirm remove
+	confirm  "Remove tlskey file ? " "yes" "Remove: $tlskey_file"
+
+	# Update the index
+	tlskey_index_update del || die "Failed to update inline-index"
+
+	"$EASYTLS_RM" "$tlskey_file" || die "Failed to remove: $tlskey_file"
+	[ -f "$metadata_file" ] && {
+		"$EASYTLS_RM" "$metadata_file" || die "Failed to remove: $metadata_file"
+		}
+
+	[ ! $silent_remove ] && notice "TLS-Crypt-V2 key removed: $tlskey_file"
+
+	# explicitly return success for callers
+	return 0
+} # => tlskey_remove ()
+
+
+
+############################################################################
+#
+# EASYTLS INLINE Section
+#
+
+# Renew .inline file
+inline_renew ()
+{
+	# Easy-RSA certificate renewal is broken, do not use it.
+	error_msg "Easy-TLS does not support inline-renew."
+	error_msg "Use: 'easytls inline-remove' to delete the old inline file"
+	error_msg "and then create a new inline file for the new certificate."
+	return 1
+
+	[ $# -ge 1 ] || die "Required option(s): <filename_base>"
+
+	verify_tls_init
+
+	name="$1"
+	shift
+
+	cmd_opts=""
+	while [ -n "$1" ]; do
+		case "$1" in
+			0|1)	key_direction="$1" ;;
+			add-dh)	cmd_opts="$cmd_opts add-dh" ;;
+			nokey)	cmd_opts="$cmd_opts nokey" ;;
+			*)	warn "Ignoring unknown command option: '$1'" ;;
+		esac
+		shift
+	done
+
+	inline_file="$EASYTLS_PKI/$name.inline"
+	crt_file="$EASYRSA_PKI/issued/$name.crt"
+
+	[ -f "$inline_file" ] || die "inline_renew: Missing: $inline_file"
+	[ -f "$crt_file" ] || die "inline_renew: Missing: $crt_file"
+	openssl_crt_serial
+
+	# Collect the attributes of .inline file
+	inline_is_base="$("$EASYTLS_GREP" -c '^# EasyTLS - File name base:.*$' "$inline_file")"
+	inline_is_tlsauth="$("$EASYTLS_GREP" -c '^<tls-auth>$' "$inline_file")"
+	inline_is_tlscrypt="$("$EASYTLS_GREP" -c '^<tls-crypt>$' "$inline_file")"
+	inline_is_tlscryptv2="$("$EASYTLS_GREP" -c '^<tls-crypt-v2>$' "$inline_file")"
+
+	# Verify .inline is valid
+	[ $inline_is_base -eq 1 ] || \
+		die "File is not valid .inline: $inline_file"
+	one_type=$((inline_is_tlsauth+inline_is_tlscrypt+inline_is_tlscryptv2))
+	[ $one_type -le 1 ] || die "File is not valid .inline: $inline_file"
+
+	# Determine the type of .inline file
+	inline_type="tls-base"
+	[ $inline_is_tlsauth -eq 1 ] && inline_type="tls-auth"
+	[ $inline_is_tlscrypt -eq 1 ] && inline_type="tls-crypt"
+	[ $inline_is_tlscryptv2 -eq 1 ] && inline_type="tls-crypt-v2"
+
+	# If --key-direction is specified in command line but does not match
+	# current inline setting then issue a warning
+	if [ "$inline_type" = "tls-auth" ] && [ $key_direction ]
+	then
+		# Determine inline <key-direction>
+		is_key_dir="$(inline_renew_key_direction)"
+		case "$is_key_dir" in
+		0|1)
+			# Verify if command line wants to change inline
+			[ $key_direction -eq $is_key_dir ] || \
+			warn "Command line will change inline key-direction"
+		;;
+		*)
+			# Assume key-direction is missing from inline
+			warn "TLS-auth key-direction missing"
+		;;
+		esac
+	fi
+
+	# Auto-detect --key-direction if not specified in command line
+	# default to current inline file or no_key_direction
+	if [ "$inline_type" = "tls-auth" ] && [ ! $key_direction ]
+	then
+		# Determine inline <key-direction>
+		is_key_dir="$(inline_renew_key_direction)"
+		case "$is_key_dir" in
+			0|1)	key_direction="$is_key_dir" ;;
+			*)	warn "TLS-auth key-direction missing" ;;
+		esac
+	fi
+
+	# Confirm renew type
+	confirm "Renew inline file ? " "yes" \
+		"Renew: $inline_file as Type: $inline_type"
+
+	# Make a backup of inline file incase renew fails
+	[ -f "$inline_file.backup" ] && \
+		die "Backup already exists: $inline_file.backup"
+	"$EASYTLS_CP" "$inline_file" "$inline_file.backup" || \
+		die "Unable to create backup: $inline_file.backup"
+
+	# Remove the old .inline file
+	# .inline HASH is checked prior to removal
+	silent_remove=1
+	inline_remove "$name"
+
+	# Disable completion notices from sub processes
+	silent_inline=1
+
+	# Build the new .inline file
+	case "$inline_type" in
+		tls-base)
+			#silent_base=1
+			inline_base "$name" $cmd_opts || \
+				die "Failed to create inline base file"
+			inline_index_update add
+		;;
+		tls-auth)
+			inline_tls_auth "$name" "$key_direction" $cmd_opts
+		;;
+		tls-crypt)
+			inline_tls_crypt_v1 "$name" $cmd_opts
+		;;
+		tls-crypt-v2)
+			inline_tls_crypt_v2 "$name" $cmd_opts
+		;;
+		*)
+			die "Unknown error inline_type: $inline_type"
+		;;
+	esac
+
+	# Renew successful, remove the backup
+	"$EASYTLS_RM" -f "$inline_file.backup"
+
+	notice "Inline $inline_type file renewed: $inline_file"
+} # => inline_renew ()
+
+# Get current inline key direction
+inline_renew_key_direction ()
+{
+	"$EASYTLS_GREP" '^key-direction [01]$' "$inline_file" | "$EASYTLS_AWK" '{print $2}'
+}
+
+# Create inline credentials file from Easy-RSA PKI
+inline_base ()
+{
+	[ $# -ge 1 ] || {
+		error_msg "Required option(s): <filename_base>"
+		return 1
+		}
+
+	verify_tls_init
+
+	name="$1"
+	shift
+
+	while [ -n "$1" ]; do
+		case "$1" in
+			nokey) no_x509_key=1 ;;
+			add-dh) inline_dh_file=1 ;;
+			*) warn "Ignoring unknown command option: '$1'" ;;
+		esac
+		shift
+	done
+
+	ca_file="$EASYRSA_PKI/ca.crt"
+	crt_file="$EASYRSA_PKI/issued/$name.crt"
+	key_file="$EASYRSA_PKI/private/$name.key"
+	[ -z "$inline_file" ] && inline_file="$EASYTLS_PKI/$name.inline"
+
+	[ -f "$crt_file" ] || {
+		error_msg "Certificate file missing or revoked: $crt_file"
+		return 1
+		}
+
+	if [ "$no_x509_key" ]
+	then
+		# Key file is not required
+		:
+	else
+		# Key file is required
+		[ -f "$key_file" ] || {
+			error_msg "Key file missing or revoked: $key_file"
+			return 1
+			}
+	fi
+
+	if [ "$inline_dh_file" ]
+	then
+		# dh file is required
+		help_note="Use --dh=<file_name> to specify an alternate dh file."
+		default_dh_file="$EASYRSA_PKI/dh.pem"
+		EASYRSA_DH_FILE="${EASYRSA_DH_FILE:-"$default_dh_file"}"
+		[ -f "$EASYRSA_DH_FILE" ] || {
+			"Diffie-Hellman parameters file missing: $EASYRSA_DH_FILE"
+			return 1
+			}
+		unset help_note
+	fi
+
+	# get the serial number of the certificate from OpenSSL
+	crt_serial=""
+	openssl_crt_serial
+
+	# Check .inline file does not exist
+	if [ "$EASYTLS_BATCH" ]
+	then
+		"$EASYTLS_RM" -f "$inline_file"
+	else
+		[ -f "$inline_file" ] && {
+			error_msg "Inline file exists: $inline_file"
+			return 1
+			}
+	fi
+
+	# Build .inline file
+	{
+		"$EASYTLS_PRINTF" '%s\n' "# $TLSKEY_CUSTOM_GRP"
+		"$EASYTLS_PRINTF" '%s\n' "# EasyTLS version $EASYTLS_VERSION"
+		"$EASYTLS_PRINTF" '%s\n' "# Common name: $name"
+		"$EASYTLS_PRINTF" '%s\n' "# X509 serial: $crt_serial"
+		"$EASYTLS_PRINTF" '%s\n' ""
+		"$EASYTLS_PRINTF" '%s\n' "<cert>"
+		"$EASYTLS_CAT" "$crt_file"
+		"$EASYTLS_PRINTF" '%s\n' "</cert>"
+		"$EASYTLS_PRINTF" '%s\n' ""
+		"$EASYTLS_PRINTF" '%s\n' "<key>"
+
+		if [ "$no_x509_key" ]
+		then
+			"$EASYTLS_PRINTF" '%s\n' \
+			' * Replace this line with your complete x509 key file *'
+		else
+			"$EASYTLS_CAT" "$key_file"
+		fi
+
+		"$EASYTLS_PRINTF" '%s\n' "</key>"
+		"$EASYTLS_PRINTF" '%s\n' ""
+		"$EASYTLS_PRINTF" '%s\n' "<ca>"
+		"$EASYTLS_CAT" "$ca_file"
+		"$EASYTLS_PRINTF" '%s\n' "</ca>"
+		"$EASYTLS_PRINTF" '%s\n' ""
+
+		if [ "$inline_dh_file" ]
+		then
+			"$EASYTLS_PRINTF" '%s\n' "<dh>"
+			"$EASYTLS_CAT" "$EASYRSA_DH_FILE"
+			"$EASYTLS_PRINTF" '%s\n' "</dh>"
+			"$EASYTLS_PRINTF" '%s\n' ""
+		fi
+
+	} > "$inline_file" || {
+		error_msg "Failed to write inline file: $inline_file"
+		return 1
+		}
+
+	easytls_verbose
+	easytls_verbose "Inline base file created: $inline_file"
+
+	# explicitly return success for callers
+	return 0
+
+} # => inline_base ()
+
+# Append TLS auth file to base file
+inline_tls_auth ()
+{
+	[ $# -ge 1 ] || die "Required option(s): <filename_base>"
+
+	verify_tls_init
+
+	name="$1"
+	shift
+
+	cmd_opts=""
+	while [ -n "$1" ]; do
+		case "$1" in
+			0|1)	key_direction="$1" ;;
+			add-dh)	cmd_opts="$cmd_opts add-dh" ;;
+			nokey)	cmd_opts="$cmd_opts nokey" ;;
+			*) 	warn "Ignoring unknown command option: '$1'" ;;
+		esac
+		shift
+	done
+
+	tls_auth_key="$EASYTLS_PKI/tls-auth.key"
+	inline_file="$EASYTLS_PKI/$name.inline"
+
+	[ -f "$tls_auth_key" ] || \
+		die "TLS key file does not exist: $tls_auth_key"
+
+	case "$key_direction" in
+		0|1)
+			# Using user specified --key-direction
+			:
+		;;
+		*)
+			# No key-direction found
+			die "key-direction is required! Server=0, client=1."
+		;;
+	esac
+
+	# Inline base file
+	#silent_base=1
+	inline_base "$name" $cmd_opts || die "Failed to create inline base file"
+
+	{	"$EASYTLS_PRINTF" "%s\n" "# TLS auth"
+		"$EASYTLS_PRINTF" "%s\n" ""
+		"$EASYTLS_PRINTF" "%s\n" "key-direction $key_direction"
+		"$EASYTLS_PRINTF" "%s\n" ""
+		"$EASYTLS_PRINTF" "%s\n" "<tls-auth>"
+		"$EASYTLS_CAT" "$tls_auth_key"
+		"$EASYTLS_PRINTF" "%s\n" "</tls-auth>"
+		"$EASYTLS_PRINTF" "%s\n" ""
+	} >> "$inline_file" || die "Failed to create inline file: $inline_file"
+
+	# Hash inline file and add hash to index
+	inline_index_update add || die "Failed to update inline-index"
+
+	[ $silent_inline ] || \
+		notice "Inline TLS auth file created: $inline_file"
+
+	# explicitly return success for callers
+	return 0
+
+} # => inline_tls_auth ()
+
+# Append TLS crypt file to base file
+inline_tls_crypt_v1 ()
+{
+	[ $# -ge 1 ] || die "Required option(s): <filename_base>"
+
+	verify_tls_init
+
+	name="$1"
+	shift
+
+	cmd_opts=""
+	while [ -n "$1" ]; do
+		case "$1" in
+			add-dh) cmd_opts="$cmd_opts add-dh" ;;
+			nokey) cmd_opts="$cmd_opts nokey" ;;
+			*) warn "Ignoring unknown command option: '$1'" ;;
+		esac
+		shift
+	done
+
+	tls_file="$EASYTLS_PKI/tls-crypt.key"
+	inline_file="$EASYTLS_PKI/$name.inline"
+
+	[ -f "$tls_file" ] || die "TLS key file does not exist: $tls_file"
+
+	# Inline base file
+	#silent_base=1
+	inline_base "$name" $cmd_opts || die "Failed to create inline base file"
+
+	{	"$EASYTLS_PRINTF" "%s\n" "# TLS crypt"
+		"$EASYTLS_PRINTF" "%s\n" ""
+		"$EASYTLS_PRINTF" "%s\n" "<tls-crypt>"
+		"$EASYTLS_CAT" "$tls_file"
+		"$EASYTLS_PRINTF" "%s\n" "</tls-crypt>"
+		"$EASYTLS_PRINTF" "%s\n" ""
+	} >> "$inline_file" || die "Failed to create inline file: $inline_file"
+
+	# Hash inline file and add hash to index
+	inline_index_update add || die "Failed to update inline-index"
+
+	[ $silent_inline ] || \
+		notice "Inline TLS crypt file created: $inline_file"
+
+	# explicitly return success for callers
+	return 0
+
+} # => inline_tls_crypt_v1 ()
+
+# Append TLS crypt v2 file to base file
+inline_tls_crypt_v2 ()
+{
+	[ $# -ge 1 ] || die "Required option(s): <filename_base>"
+
+	verify_tls_init
+
+	name="$1"
+	shift
+
+	cmd_opts=""
+	while [ -n "$1" ]; do
+		case "$1" in
+			add-dh) cmd_opts="$cmd_opts add-dh" ;;
+			nokey) cmd_opts="$cmd_opts nokey" ;;
+			no-md) no_metadata=1 ;;
+			add-hw) add_hardware=1 ;;
+			*) warn "Ignoring unknown command option: '$1'" ;;
+		esac
+		shift
+	done
+
+	cert_file="$EASYRSA_PKI/issued/$name.crt"
+	[ -f "$cert_file" ] || die "Missing cert file: $cert_file"
+	cert_purpose='Client'
+	verify_cert_purpose "$cert_file" "SSL client : Yes" || cert_purpose='Server'
+	tls_file="$EASYTLS_PKI/$name-tls-crypt-v2.key"
+	metadata_file="$EASYTLS_MD_DIR/$name-tls-crypt-v2.metadata"
+	inline_file="$EASYTLS_PKI/$name.inline"
+
+	# This does not over-write a previous setting
+	#set_var TLSKEY_SUBNAME	'NOSUBKEY'
+
+	# Set file names
+	sub_name="$name-$TLSKEY_SUBNAME"
+	[ "$TLSKEY_SUBNAME" = 'NOSUBKEY' ] || {
+		tls_file="$EASYTLS_PKI/$sub_name-tls-crypt-v2.key"
+		metadata_file="$EASYTLS_MD_DIR/$sub_name-tls-crypt-v2.metadata"
+		inline_file="$EASYTLS_PKI/$sub_name.inline"
+		}
+
+	# Check for existing files
+	[ -f "$tls_file" ] || die "TLS key file does not exist: $tls_file"
+	[ -f "$inline_file" ] && die "Inline file already exist: $inline_file"
+
+	if [ "$cert_purpose" = 'Client' ]
+	then
+		# Must be a client
+		[ -f "$metadata_file" ] || die "Missing metadata_file: $metadata_file"
+		# Get metadata
+		metadata_string="$("$EASYTLS_CAT" "$metadata_file")"
+
+		# Extract tlskey-serial
+		tlskey_serial="${metadata_string%%-*}"
+
+		# Drop EasyTLS header and version
+		metadata_string="${metadata_string#* }"
+
+		# Drop CA fingerprint
+		metadata_string="${metadata_string#*-}"
+
+		# Extract Server name and drop it
+		srv_name="${metadata_string%% *}"
+		metadata_string="${metadata_string#* }"
+
+		# Drop x509 cert-serial
+		metadata_string="${metadata_string#* }"
+
+		# Set creation Date
+		MD_date_sec="${metadata_string%% *}"
+		MD_date="$("$EASYTLS_DATE" --date=@${MD_date_sec} +%F)" 2>/dev/null || {
+			MD_date="$("$EASYTLS_DATE" -u -d "1970-01-01 ${MD_date_sec} seconds" +"%Y-%m-%d")"
+			}
+		# Drop Date
+		metadata_string="${metadata_string#* }"
+
+		# Set custom-group
+		MD_cgroup="${metadata_string%% *}"
+		# Drop custom-group
+		metadata_string="${metadata_string#* }"
+
+		# Verify Custom-Group
+		help_note="This key was built with a different Custom-Group"
+		[ "$TLSKEY_CUSTOM_GRP" = "$MD_cgroup" ] || \
+			die "Custom-group mismatch: $TLSKEY_CUSTOM_GRP <> $MD_cgroup"
+		unset help_note
+
+		# Set common-name
+		MD_cn="${metadata_string%% *}"
+		# Drop common-name
+		metadata_string="${metadata_string#* }"
+
+		# Set subkey-name
+		MD_subkey="${metadata_string%% *}"
+		# Drop subkey-name
+		metadata_string="${metadata_string#* }"
+
+		# Set OPT
+		MD_opt="${metadata_string%% *}"
+		# Drop OPT
+		metadata_string="${metadata_string#* }"
+
+		# Set hardware-address
+		MD_hw="${metadata_string%% *}"
+		# Drop hardware-address
+		metadata_string="${metadata_string#* }"
+
+		# Get the CA serial number
+		ca_cert="$EASYRSA_PKI/ca.crt"
+		ca_serial="$(fn_ca_serial)"
+		ca_serial="${ca_serial#*=}"
+	else
+		# Must be a server
+		no_metadata=1
+		tlskey_serial='0000000000000000000000000000000000000000'
+	fi
+
+	# Inline base file
+	#silent_base=1
+	inline_base "$name" $cmd_opts || die "Failed to create inline base file"
+
+	{
+		"$EASYTLS_PRINTF" "%s\n" "# Easy-TLS version $EASYTLS_VERSION - TLS crypt v2 key"
+		[ $no_metadata ] || {
+			"$EASYTLS_PRINTF" '%s\n' "# CA serial: $ca_serial"
+			"$EASYTLS_PRINTF" '%s\n' "# tlskey-serial: $tlskey_serial"
+			"$EASYTLS_PRINTF" '%s\n' "# Creation Date: $MD_date"
+			"$EASYTLS_PRINTF" '%s\n' "# Custom-Group: $MD_cgroup"
+			"$EASYTLS_PRINTF" '%s\n' "# Server Common Name: $srv_name"
+			"$EASYTLS_PRINTF" '%s\n' "# Client Common Name: $MD_cn"
+			[ "$MD_subkey" = 'NOSUBKEY' ] || \
+				"$EASYTLS_PRINTF" '%s\n' "# Sub-key name: $MD_subkey"
+			[ "$MD_opt" = "OPT" ] || "$EASYTLS_PRINTF" '%s\n' "# Opt: $MD_opt"
+			"$EASYTLS_PRINTF" '%s' "# Key status: "
+			if [ "$MD_hw" = "000000000000" ]
+			then
+				"$EASYTLS_PRINTF" '%s\n' "Open"
+			else
+				if [ $add_hardware ]
+				then
+					"$EASYTLS_PRINTF" '%s\n' "Locked $MD_hw"
+				else
+					"$EASYTLS_PRINTF" '%s\n' "Closed"
+				fi
+			fi
+			"$EASYTLS_PRINTF" "%s\n" ""
+			}
+		"$EASYTLS_PRINTF" "%s\n" "<tls-crypt-v2>"
+		"$EASYTLS_CAT" "$tls_file"
+		"$EASYTLS_PRINTF" "%s\n" "</tls-crypt-v2>"
+		"$EASYTLS_PRINTF" "%s\n" ""
+	} >> "$inline_file" || die "Failed to create inline file: $inline_file"
+
+	# Hash inline file and add hash to index
+	inline_index_update add || die "Failed to update inline-index"
+
+	[ $silent_inline ] || \
+		notice "Inline TLS crypt v2 file created: $inline_file"
+
+	# explicitly return success for callers
+	return 0
+
+} # => inline_tls_crypt_v2 ()
+
+
+
+############################################################################
+#
+# EASYTLS BUILD Section
+#
+
+# Create TLS auth file
+build_tls_auth ()
+{
+	# This is allowed without a complete Easy-RSA PKI
+	# Verify Easy-TLS has been correctly setup
+	verify_tls_init
+
+	# Verify OpenVPN version and use correct syntax to --genkey
+	verify_openvpn
+	case $openvpn_version in
+		2.5|2.6) build_string="--genkey tls-auth" ;;
+		2.4) build_string="--genkey --secret" ;;
+		*) die "Unsupported OpenVPN version $openvpn_version" ;;
+	esac
+
+	key_file="$EASYTLS_PKI/tls-auth.key"
+
+	[ -f "$key_file" ] && \
+		die "TLS auth key already exists: $key_file"
+
+	"$EASYTLS_OPENVPN" $build_string "$key_file" || \
+		die "Failed to create TLS auth key: $key_file"
+
+	notice "TLS auth key created: $key_file"
+} # => build_tls_auth ()
+
+# Create TLS crypt v1 file
+build_tls_crypt_v1 ()
+{
+	# This is allowed without a complete Easy-RSA PKI
+	# Verify Easy-TLS has been correctly setup
+	verify_tls_init
+
+	# Verify OpenVPN version and use correct syntax to --genkey
+	verify_openvpn
+	case $openvpn_version in
+		2.5|2.6) build_string="--genkey tls-crypt" ;;
+		2.4) build_string="--genkey --secret" ;;
+		*) die "Unsupported OpenVPN version $openvpn_version" ;;
+	esac
+
+	key_file="$EASYTLS_PKI/tls-crypt.key"
+
+	[ -f "$key_file" ] && \
+		die "TLS crypt v1 key already exists: $key_file"
+
+	"$EASYTLS_OPENVPN" $build_string "$key_file" || \
+		die "Failed to create TLS crypt v1 key: $key_file"
+
+	notice "TLS crypt v1 key created: $key_file"
+} # => build_tls_crypt_v1 ()
+
+# Create TLS crypt v2 server file
+build_tls_crypt_v2_server ()
+{
+	[ $# -ge 1 ] || die "Required option(s): <server_filename_base>"
+
+	# Verify Easy-TLS and Easy-RSA have been correctly setup
+	# This key does not require EasyRSA PKI
+	# but for the client metadata this script does
+	# So make CA a requirement for both server and client
+	verify_ca_init
+
+	# Verify OpenVPN version and use correct syntax to --genkey
+	verify_openvpn
+	case $openvpn_version in
+		2.5|2.6) build_string="--genkey tls-crypt-v2-server" ;;
+		*) die "Unsupported OpenVPN version $openvpn_version" ;;
+	esac
+
+	srv_name="$1"
+	srv_cert="$EASYRSA_PKI/issued/$srv_name.crt"
+	key_file="$EASYTLS_PKI/$srv_name-tls-crypt-v2.key"
+
+	[ -f "$srv_cert" ] || \
+		die "Easy-TLS requires that the x509 certificate has been built.
+Missing file: $srv_cert"
+
+	verify_cert_purpose "$srv_cert" 'SSL server : Yes' || \
+		die "Certificate must be a Server: $srv_cert"
+
+	[ -f "$key_file" ] && die "Server file already exists: $key_file"
+
+	# get the serial number of the certificate from OpenSSL
+	crt_file="$srv_cert"
+	crt_serial=""
+	openssl_crt_serial
+
+	"$EASYTLS_OPENVPN" $build_string "$key_file" || \
+		die "Failed to create tls-crypt-v2-server key: $key_file"
+
+	# Save incomplete server record to key-index
+	tlskey_serial='0000000000000000000000000000000000000000'
+	cli_name="$srv_name" # Improve this
+	tlskey_index_update add || die "Failed to update tlskey-index"
+
+	notice "TLS crypt v2 server key created: $key_file"
+
+	if [ $EASYTLS_BINLINE ]
+	then
+		inline_tls_crypt_v2 "$srv_name" || warn "Failed to build Inline file!"
+	fi
+
+	# Explicit return success
+	return 0
+} # => build_tls_crypt_v2_server ()
+
+# Create TLS crypt v2 client file
+build_tls_crypt_v2_client ()
+{
+	[ $# -ge 2 ] || \
+	die "Required option(s): <server_filename_base> <client_filename_base>"
+
+	# Verify Easy-TLS and Easy-RSA have been correctly setup
+	# This key does not require EasyRSA PKI
+	# but for the client metadata this script does
+	# So make CA a requirement for both server and client
+	verify_ca_init
+
+	# Verify OpenVPN version and use correct syntax to --genkey
+	verify_openvpn
+	case $openvpn_version in
+		2.5|2.6) build_string="--genkey tls-crypt-v2-client" ;;
+		*) die "Unsupported OpenVPN version $openvpn_version" ;;
+	esac
+
+	ca_cert="$EASYRSA_PKI/ca.crt"
+	srv_name="$1"
+	srv_cert="$EASYRSA_PKI/issued/$srv_name.crt"
+	shift
+
+	cli_name="$1"
+	cli_cert="$EASYRSA_PKI/issued/$cli_name.crt"
+	shift
+
+	# don't do that ..
+	[ "$srv_name" = "$cli_name" ] && \
+		die "Server name cannot be the same as the client name."
+
+	[ -f "$srv_cert" ] || \
+		die "Easy-TLS requires that the X509 Server certificate has been built.
+* Missing Server certificate: $srv_cert"
+
+	[ -f "$cli_cert" ] || \
+		die "Easy-TLS requires that the X509 Client certificate has been built.
+* Missing Client certificate: $cli_cert"
+
+	verify_cert_purpose "$cli_cert" 'SSL client : Yes' || \
+		die "Certificate must be a Client: $cli_cert"
+
+	in_file="$EASYTLS_PKI/$srv_name-tls-crypt-v2.key"
+	key_file="$EASYTLS_PKI/$cli_name-tls-crypt-v2.key"
+	metadata_debug="$EASYTLS_MD_DIR/$cli_name-tls-crypt-v2.metadata"
+
+	# This does not over-write a previous setting
+	#set_var TLSKEY_SUBNAME	'NOSUBKEY'
+
+	[ "$TLSKEY_SUBNAME" = 'NOSUBKEY' ] || {
+		key_file="$EASYTLS_PKI/$cli_name-$TLSKEY_SUBNAME-tls-crypt-v2.key"
+		metadata_debug="$EASYTLS_MD_DIR/$cli_name-$TLSKEY_SUBNAME-tls-crypt-v2.metadata"
+		}
+
+	help_note="You must first build a TLS-Crypt-V2 Server key."
+	[ -f "$in_file" ] || die "Server key does not exist: $in_file"
+	help_note="To remove an inline file use: easytls remove"
+	[ -f "$key_file" ] && die "Client key already exists: $key_file"
+	unset help_note
+
+	# Capture HW addresses
+	EASYTLS_TLSCV2_HWLIST=""
+	while [ -n "$1" ]; do
+		# Needs to allow multiples. EG: eth & wifi
+		EASYTLS_TLSCV2_HWADDR="$1"
+		# Verify this is a 12 digit hex only value
+		# and add it to the HWLIST
+		hw_addr_hex_check "$EASYTLS_TLSCV2_HWADDR" || \
+			die "Invalid Hardware Address: $EASYTLS_TLSCV2_HWADDR"
+		shift
+	done
+
+	# Confirm metadata Custom-Group
+	[ "$TLSKEY_CUSTOM_GRP" = "EASYTLS" ] || {
+		confirm "Is the Custom-Group field correct ? " "yes" \
+		"Custom-Group field for metadata: $TLSKEY_CUSTOM_GRP"
+		}
+
+	# Confirm --sub-key-name)
+	[ "$TLSKEY_SUBNAME" = "NOSUBKEY" ] || {
+		confirm "Is the Sub-key-name correct ? " "yes" \
+		"Sub-key-name field for metadata: $TLSKEY_SUBNAME"
+		}
+
+	# Confirm metadata Hardware-Address(es)
+	[ -n "$EASYTLS_TLSCV2_HWLIST" ] && {
+		notice "All Hardware-Addresses are valid length hexidecimal values."
+		confirm "Is the Hardware-Address field correct ? " "yes" \
+		"Hardware-Address field for metadata: $EASYTLS_TLSCV2_HWLIST"
+		}
+
+	metadata=""
+	b64_metadata=""
+	b64_enc_metadata || die "Failed to base64 encode metadata"
+
+	# Build key
+	"$EASYTLS_OPENVPN" --tls-crypt-v2 "$in_file" \
+		$build_string "$key_file" "$b64_metadata" || \
+		die "Failed to create tls-crypt-v2-client key: $key_file"
+
+	# Save serial number to key-index
+	tlskey_index_update add || die "Failed to update tlskey-index"
+
+	notice "TLS crypt v2 client key created: $key_file"
+
+	if [ $EASYTLS_BINLINE ]
+	then
+		inline_tls_crypt_v2 "$cli_name" || warn "Failed to build Inline file!"
+	fi
+
+	# Explicit return success
+	return 0
+} # => build_tls_crypt_v2_client ()
+
+# Verify the input is a 12 digit hex value and export it to the HW list
+hw_addr_hex_check ()
+{
+	temp_hw_addr="$("$EASYTLS_PRINTF" '%s' "$1" | \
+		"$EASYTLS_SED" -e 's/\://g' -e 's/\-//g' -e 'y/abcdef/ABCDEF/')"
+
+	[ 12 -eq ${#temp_hw_addr} ] || {
+		help_note="Hardware Address must be 12 digits exactly!"
+		return 1
+		}
+	"$EASYTLS_PRINTF" '%s\n' "$temp_hw_addr" | \
+		"$EASYTLS_GREP" -q '[^[:xdigit:]]' && {
+			help_note="Hardware Address must be hexidecimal digits!"
+			return 1
+			}
+	export EASYTLS_TLSCV2_HWLIST="${EASYTLS_TLSCV2_HWLIST} ${temp_hw_addr}"
+	return 0
+}
+
+# Base64 encode metadata fields
+b64_enc_metadata ()
+{
+	# metadata strings:
+	#
+	# All fields are single contiguous words
+	#
+	# 1.  "TLS_Key_Serial_Number"-"Random padding"--'easytls'-"$EASYTLS_VERSION"
+	#     "Random padding" and "$EASYTLS_VERSION" are non-functional
+	#
+	# 2   CA Identity
+	#     `OpenSSL output`; Drop decription and remove colons ':' (Hex only field)
+	#
+	# 3.  Client certificate serial
+	#     `OpenSSL output`; Drop the 'serial=' (Hex only field)
+	#
+	# 4.  Creation Date of this key:
+	#     %s     seconds since 1970-01-01 00:00:00 UTC
+	#
+	# 5.  Custom Group string
+	#     Default: EASYTLS
+	#
+	# 6.  Client CommonName
+	#
+	# 7.  Sub-key Name
+	#     Default: NOSUBKEY
+	#
+	# 8.  Option - TBD
+	#     Default: OPT
+	#
+	# 9.  Hardware Address string:
+	#     Default: 000000000000
+	#
+
+	# metadata_version
+	metadata_version="easytls-$EASYTLS_VERSION"
+
+	# CA Identity
+	generate_ca_identity
+
+	# Append Server name to CA-ID
+	ca_identity="$ca_identity-$srv_name"
+
+	# get the serial number of the certificate from OpenSSL
+	crt_file="$cli_cert"
+	crt_serial=""
+	openssl_crt_serial
+
+	# Set creation Date
+	key_date="$("$EASYTLS_DATE" +%s)"
+
+	# Build metadata
+	metadata="$metadata_version $ca_identity $crt_serial $key_date"
+
+	# Append --custom-group
+	metadata="$metadata $TLSKEY_CUSTOM_GRP"
+
+	# Append common_name
+	[ -z "$cli_name" ] && {
+		error_msg "no client name"
+		return 1
+		}
+	metadata="$metadata $cli_name"
+
+	# Append --sub-key-name
+	metadata="$metadata $TLSKEY_SUBNAME"
+
+	# Append opt field (Usage is to be decided)
+	if [ -n "$EASYTLS_TLSCV2_OPT" ]
+	then
+		metadata="$metadata $EASYTLS_TLSCV2_OPT"
+	else
+		metadata="$metadata OPT"
+	fi
+
+	# Append --hw-addr
+	if [ -n "$EASYTLS_TLSCV2_HWLIST" ]
+	then
+		MD_HW_LIST=''
+		for i in $EASYTLS_TLSCV2_HWLIST
+		do
+			MD_HW_LIST="${MD_HW_LIST}+${i}"
+		done
+		metadata="$metadata ${MD_HW_LIST}+"
+	else
+		metadata="$metadata 000000000000"
+	fi
+
+	# TLS Crypt v2 client key serial number
+	tls_crypt_v2_serial_number || {
+		error_msg "Failed to create serial number"
+		return 1
+		}
+
+	# Save metadata in plain text
+	#save_metadata || \....
+	"$EASYTLS_PRINTF" "%s\n" "$metadata" > "$metadata_debug" || {
+		error_msg "Save metadata failed"
+		return 1
+		}
+
+	easytls_verbose "metadata: $metadata"
+	# Base64 encode metadata
+	b64_metadata="$("$EASYTLS_PRINTF" "%s" "$metadata"|"$EASYRSA_OPENSSL" enc -e -a -A)"
+} # => b64_enc_metadata ()
+
+# Generate CA Identity from CA fingerprint
+generate_ca_identity ()
+{
+	# CA fingerprint
+	ca_fingerprint="$(fn_ca_fingerprint)"
+	#easytls_verbose "CA fingerprint: $ca_fingerprint"
+
+	# CA Identity
+	ca_identity="$(fn_ca_identity)"
+	#easytls_verbose "CA Identity: $ca_identity"
+} # => generate_ca_identity ()
+
+# Collect CA serial number
+fn_ca_serial ()
+{
+	"$EASYRSA_OPENSSL" x509 -in "$ca_cert" -noout -serial
+}
+
+# Collect CA fingerprint
+fn_ca_fingerprint ()
+{
+	"$EASYRSA_OPENSSL" \
+		x509 -in "$ca_cert" -noout -${EASYTLS_HASH_ALGO} -fingerprint
+}
+
+# Collect CA Identity
+fn_ca_identity ()
+{
+	"$EASYTLS_PRINTF" '%s' "$ca_fingerprint" | "$EASYTLS_SED" -e 's/^.*=//g' -e 's/://g'
+}
+
+# Save metadata
+save_metadata ()
+{
+	"$EASYTLS_PRINTF" "%s\n" "$metadata" > "$metadata_debug"
+}
+
+# Save the ID
+save_id ()
+{
+	# Verify Easy-TLS and Easy-RSA have been correctly setup
+	ca_cert="$EASYRSA_PKI/ca.crt"
+	if [ $EASYTLS_INIT ]
+	then
+		# NOT fatal
+		[ -f "$ca_cert" ] || {
+			warn "
+      Easy-TLS cannot create TLS-Crypt-V2 keys until you create your CA
+      and Server/Client certificates."
+			return 1
+			}
+		# Clear the Old Master ID
+		unset EASYTLS_MASTER_ID
+	else
+		# Fatal
+		verify_ca_init
+	fi
+
+	# Generate CA Identity from CA fingerprint
+	generate_ca_identity
+
+	# Add CA-ID to config
+	save_id_authorized=1
+	easytls_config id "$ca_identity"
+	unset save_id_authorized
+
+	# Create CA-ID file - Legacy
+	"$EASYTLS_PRINTF" "%s" "$ca_identity" > "$EASYTLS_CA_IDENTITY" || \
+		die "Failed to create CA Identify file: $EASYTLS_CA_IDENTITY"
+
+	notice "Saved CA Identity: $EASYTLS_CA_IDENTITY"
+}
+
+
+
+############################################################################
+#
+# DISABLED-LIST Section
+#
+
+# Manage easytls/disabled-list.txt - Used by easytls-cryptv2-verify.sh
+disabled_list_manager ()
+{
+	action="$1"
+
+	# Allow the list to be rehashed before verify_tls_init
+	case $action in
+	rehash)
+		# This needs more work to recreate the Date stamps.
+		disabled_list_update_and_hash || die "Failed to rehash disabled-list."
+		notice "disabled-list rehash successful."
+		return 0
+	;;
+	enable|disable)
+		: # Allow
+	;;
+	*)
+		die "disabled_list_manager - Invalid action: $action"
+	;;
+	esac
+
+	verify_tls_init
+
+	# Verify disabled-list Hash
+	disabled_list_verify_hash || die "Disabled list is corrupt."
+
+	name="$2"
+	crt_file="$EASYRSA_PKI/issued/$name.crt"
+	[ -f "$crt_file" ] || die "Cannot find certificate: $crt_file"
+
+	# get the serial number of the certificate from OpenSSL
+	# https://github.com/TinCanTech/easy-tls/issues/80
+	crt_serial=""
+	openssl_crt_serial
+
+	# Check unique record from tlskey-index
+	"$EASYTLS_GREP" -q \
+		"${crt_serial}[[:blank:]]${name}[[:blank:]]${TLSKEY_SUBNAME}" \
+		"$EASYTLS_KEY_INDEX" || die "There is no tlskey for this certificate"
+
+	# Get tlskey-serial number from tlskey-index
+	tlskey_serial="$(tlskey_index_full_name_to_tls_serial)"
+	"$EASYTLS_PRINTF" '%s' "$tlskey_serial" | "$EASYTLS_GREP" -q '^[[:xdigit:]]\+$' || \
+		die "tlskey-serial is invalid: $tlskey_serial"
+
+	# Check disabled-list for this tlskey-serial
+	if "$EASYTLS_GREP" -q "^${tlskey_serial}[[:blank:]]" "$EASYTLS_DISABLED_LIST"
+	then
+		is_disabled=1
+	else
+		# Not found
+		:
+	fi
+
+	#disabled_list_serial_status="$(disabled_list_serial_search)"
+	#[ $disabled_list_serial_status -lt 2 ] || die "Serial is duplicated"
+
+	# Update disabled-list
+	case $action in
+	disable) # Add serial number to the disabled-list
+		if [ $is_disabled ]
+		then
+			# serial is already disabled
+			:
+		else
+			"$EASYTLS_PRINTF" '%s\n' "$tlskey_serial $crt_serial $name $TLSKEY_SUBNAME" >> \
+				"$EASYTLS_DISABLED_LIST" || \
+				die "Failed to update disabled-list."
+
+			# Verify serial was added
+			"$EASYTLS_GREP" -q "^${tlskey_serial}[[:blank:]]${crt_serial}[[:blank:]]" \
+				"$EASYTLS_DISABLED_LIST" || \
+				die "disabled-list error disable"
+
+			#disabled_list_serial_status="$(disabled_list_serial_search)"
+			#[ $disabled_list_serial_status -eq 1 ] || \
+			#	die "disabled-list error add"
+
+			disabled_list_updated=1
+		fi
+	;;
+	enable) # Remove serial number from the disabled-list
+		if [ $is_disabled ]
+		then
+			"$EASYTLS_SED" -i "/^${tlskey_serial}[[:blank:]]${crt_serial}[[:blank:]]/d" \
+				"$EASYTLS_DISABLED_LIST" || {
+					error_msg "Failed to update disabled-list"
+					exit 99
+					}
+
+			# Verify serial was removed
+			"$EASYTLS_GREP" -q "^${tlskey_serial}[[:blank:]]${crt_serial}[[:blank:]]" \
+				"$EASYTLS_DISABLED_LIST" && {
+					error_msg "Failed to update disabled-list"
+					exit 99
+					}
+
+			#disabled_list_serial_status="$(disabled_list_serial_search)"
+			#[ $disabled_list_serial_status -eq 0 ] || \
+			#	die "disabled-list error enable"
+			disabled_list_updated=1
+		else
+			# serial is not disabled
+			:
+		fi
+	;;
+	*) die "disabled-list action invalid: $1"
+	;;
+	esac
+
+	# Update and/or Notify
+	if [ $disabled_list_updated ]
+	then
+		disabled_list_update_and_hash
+		notice "Updated disabled-list: $name ${1}d"
+	else
+		notice "No change: $name is already ${1}d"
+	fi
+} # => disabled_list_manager ()
+
+# Search disabled-list for serial number
+disabled_list_serial_search ()
+{
+	"$EASYTLS_GREP" -c "^${crt_serial}[[:blank:]]${name}$" "$EASYTLS_DISABLED_LIST"
+}
+
+# Update disabled-list footer and hash
+# TODO: is footer necessary ?
+disabled_list_update_and_hash ()
+{
+	# Update time-stamp
+	update_text="# Updated: $(date) -- $action: $name"
+	"$EASYTLS_SED" -i -e '/^# Updated: .*$/d' "$EASYTLS_DISABLED_LIST" || {
+		error_msg "disabled_list_update_and_hash - Failed delete"
+		return 1
+		}
+
+	"$EASYTLS_PRINTF" '%s\n' "$update_text" >> "$EASYTLS_DISABLED_LIST" || {
+		error_msg "disabled_list_update_and_hash - Failed update"
+		return 1
+		}
+
+	# Save new disabled-list Hash
+	disabled_list_save_hash || {
+		error_msg "Failed to save disabled-list Hash"
+		return 1
+		}
+}
+
+# Verify current disable-list hash
+disabled_list_verify_hash ()
+{
+	[ $verify_file_hash_disabled ] && return 0
+
+	# Missing disabled-list hash is ok for rehash ?
+	[ -f "$EASYTLS_DISABLED_HASH" ] || return 0
+
+	# Read the saved hash
+	disabled_list_saved_hash="$("$EASYTLS_CAT" "$EASYTLS_DISABLED_HASH")"
+
+	# Generate the current hash
+	generate_file_hash "$EASYTLS_DISABLED_LIST" || {
+		error_msg "disabled_list_verify_hash: Hash failed: $EASYTLS_DISABLED_LIST"
+		return 1
+		}
+
+	# Set current hash
+	disabled_list_current_hash="$generated_hash"
+
+	# Verify hash match
+	[ "$disabled_list_current_hash" = "$disabled_list_saved_hash" ] || {
+		error_msg "disabled_list_verify_hash: Verify hash match failed"
+		return 1
+		}
+
+	easytls_verbose "Disabled-list hash check OK"
+}
+
+# Save new disable-list hash
+disabled_list_save_hash ()
+{
+	# Generate the current hash
+	generate_file_hash "$EASYTLS_DISABLED_LIST" || {
+		error_msg "disabled_list_save_hash: Hash failed: $EASYTLS_DISABLED_LIST"
+		return 1
+		}
+
+	# Set current hash
+	disabled_list_current_hash="$generated_hash"
+
+	# Save the current hash
+	"$EASYTLS_PRINTF" '%s' "$disabled_list_current_hash" > "$EASYTLS_DISABLED_HASH" || {
+		error_msg "disabled_list_save_hash: Write failed: $EASYTLS_DISABLED_HASH"
+		return 1
+		}
+
+	easytls_verbose "Disabled-list hash save OK"
+}
+
+
+
+############################################################################
+#
+# Inter-active Section - Work in progress
+#
+
+# Verify PKI
+interactive_verify_pki ()
+{
+	if [ -d "$EASYTLS_PKI" ]
+	then
+		# Found easytls pki
+		return 0
+	else
+		# Not Found easytls pki
+		"$EASYTLS_PRINTF" '\n%s\n' "Cannot find your EasyRSA-PKI, expected to be: "
+		"$EASYTLS_PRINTF" '\n%s\n' "  $EASYRSA_PKI"
+		"$EASYTLS_PRINTF" '\n%s\n' "Make sure you have run: ./easytls init-tls"
+		"$EASYTLS_PRINTF" '\n%s\n' "Please re-run this command and specify your PKI like so:"
+		"$EASYTLS_PRINTF" '\n%s\n' "  ./easytls  --pki-dir=Your-PKI  build"
+		"$EASYTLS_PRINTF" '\n%s\n' "Example for Your-PKI could be: test-pki"
+		"$EASYTLS_PRINTF" '\n%s\n' "Quit!"
+		return 1
+	fi
+}
+
+# Ask a question
+interactive_question ()
+{
+	unset ia_answer
+	"$EASYTLS_PRINTF" '\n%s\n' "===================="
+	"$EASYTLS_PRINTF" '\n%s\n' 'To cancel this inter-active menu at any time, press Control-C'
+	[ -n "$ia_extra_help" ] && "$EASYTLS_PRINTF" '\n%s\n' "$ia_extra_help"
+	"$EASYTLS_PRINTF" '%s\n' "$ia_question_help"
+	"$EASYTLS_PRINTF" '%s ' "$ia_question_text"
+	read -r input
+	ia_answer="$input"
+}
+
+# Show the command to run
+interactive_show_cmd ()
+{
+	"$EASYTLS_PRINTF" '\n%s\n' '===================='
+	"$EASYTLS_PRINTF" '\n%s\n' '* Easy-TLS command:'
+	"$EASYTLS_PRINTF" '\n%s\n' "  * ./easytls $cmd_line"
+	"$EASYTLS_PRINTF" '\n%s\n' '===================='
+}
+
+# Inter-active build menu
+interactive_build ()
+{
+	"$EASYTLS_PRINTF" '\n%s\n' 'Easy-TLS Inter-active TLS-key builder Menu.'
+
+	# Verify PKI
+	interactive_verify_pki || {
+		error_msg 'Please create and/or specify your PKI directory.'
+		return 1
+		}
+
+	# Capture the command line to build
+	cmd_line='build'
+
+	# Choose Key
+	ia_question_help='
+* Available TLS-key types:'
+	ia_question_text='
+  [1] TLS-Auth key                   - Legacy HMAC pre-shared key
+  [2] TLS-Crypt-V1 key               - Basic TLS-crypt-v1 pre-shared key
+  [3] TLS-Crypt-V2 key for Server    - Advanced TLS-Crypt-v2 Server key
+  [4] TLS-Crypt-V2 key for Client    - Advanced TLS-Crypt-v2 Client key
+
+  Select the type of TLS-key to build:'
+	interactive_question
+
+	case $ia_answer in
+	1)	# Build TLS Auth
+		"$EASYTLS_PRINTF" '\n%s\n' '* Build TLS-Auth key'
+		cmd_line="${cmd_line}-tls-auth"
+		interactive_show_cmd
+		# Build key
+		build_tls_auth || {
+			error_msg '**Build TLS-Auth key failed'
+			return 1
+			}
+	;;
+	2)	# Build TLS Crypt v1
+		"$EASYTLS_PRINTF" '\n%s\n' '* Build TLS-Crypt-V1 key'
+		cmd_line="${cmd_line}-tls-crypt"
+		interactive_show_cmd
+		# Build key
+		build_tls_crypt_v1 || {
+			error_msg '**Build TLS-Crypt key failed'
+			return 1
+			}
+	;;
+	3)	# Build TLS Crypt v2 Server
+		"$EASYTLS_PRINTF" '\n%s\n' '* Build TLS-Crypt-V2 key for Server'
+		cmd_line="${cmd_line}-tls-crypt-v2-server"
+
+		# Set Server name and verify cert type
+		opt_server_name=""
+		cert_type='Server'
+		interactive_common_name
+		opt_server_name="$common_name"
+
+		# Print command
+		interactive_show_cmd
+
+		# Build key
+		build_tls_crypt_v2_server "$opt_server_name" || {
+			error_msg '**Build TLS-Crypt-V2 Server key failed'
+			return 1
+			}
+
+		# save me! - Changes have been made
+		save_wiscii_hash || die "Master hash save failed"
+
+		# Request inline
+		cmd_line="inline-tls-crypt-v2 $opt_server_name"
+		default='Y'
+		ia_question_help="
+* Do you want to build a corresponding inline-file ?
+
+  * Default: $default"
+		ia_question_text='
+  Enter (y)es or (n)o:'
+		while :
+		do
+			interactive_question
+			ia_answer="${ia_answer:-$default}"
+			case "$ia_answer" in
+				Y|y|Yes|yes|YES)
+					build_and_inline=1
+					break
+				;;
+				N|n|No|no|NO)
+					"$EASYTLS_PRINTF" '\n%s\n' \
+						'  * TLS-Crypt-V2 Key built. Inline-file not created.'
+					break
+				;;
+				*)
+					: # Ignore
+				;;
+			esac
+		done
+
+		# Invoke inline
+		if [ $build_and_inline ]
+		then
+			# Set opt_nokey
+			interactive_opt_nokey
+
+			# Set opt_add_dh or opt_custom_dh
+			default_dh_file="$EASYRSA_PKI/dh.pem"
+			if [ -f "$default_dh_file" ]
+			then
+				# opt_add_dh
+				interactive_opt_add_dh
+			else
+				# opt_custom_dh
+				interactive_custom_dh
+			fi
+
+			# Print command
+			interactive_show_cmd
+
+			# Create inline
+			inline_tls_crypt_v2 "$opt_server_name" \
+				${opt_nokey} ${opt_add_dh} ${opt_custom_dh} || {
+					error_msg '**Create inline-file failed'
+					return 1
+					}
+		fi
+
+		return 0
+	;;
+	4)	# Build TLS Crypt v2 Client
+		"$EASYTLS_PRINTF" '\n%s\n' '* Build TLS-Crypt-V2 key for Client'
+
+		cmd_line="${cmd_line}-tls-crypt-v2-client"
+
+		# Set Server name
+		opt_server_name=""
+		cert_type='Server'
+		ia_extra_help='* First you MUST enter your *Server* commonName.'
+		interactive_common_name
+		unset ia_extra_help
+		opt_server_name="$common_name"
+
+		# Set Client name
+		opt_client_name=""
+		cert_type='Client'
+		ia_extra_help='* Next you MUST enter your *Client* commonName.'
+		interactive_common_name
+		unset ia_extra_help
+		opt_client_name="$common_name"
+
+		# Either use default:EASYTLS or configured Custom-Group
+		# If the user selects a new Custom-Group here then this
+		# key is likely to fail to connect because Custom-Group
+		# will not match what the server expects.
+		interactive_custom_group
+
+		# Set option --sub-key-name
+		interactive_sub_key_name
+
+		# Set hardware addresses
+		interactive_hwaddr || {
+			error_msg "Invalid hardware-address: $ia_answer"
+			return 1
+			}
+
+		# Print command
+		interactive_show_cmd
+
+		# Enable internal batch_mode
+		batch_mode=1
+
+		# Build key
+		build_tls_crypt_v2_client "$opt_server_name" "$opt_client_name" \
+			${opt_hardware} || {
+				error_msg '**Build TLS-CryptV2 Client key failed'
+				return 1
+				}
+
+		# Disable internal batch_mode
+		unset batch_mode
+
+		# save me! - Changes have been made
+		save_wiscii_hash || die "Master hash save failed"
+
+		# Request inline
+		cmd_line="inline-tls-crypt-v2 $opt_client_name"
+		default='Y'
+		ia_question_help="
+* Do you want to build a corresponding inline-file ?
+
+  * Default: $default"
+		ia_question_text='
+  Enter (y)es or (n)o:'
+		while :
+		do
+			interactive_question
+			ia_answer="${ia_answer:-$default}"
+			case "$ia_answer" in
+				Y|y|Yes|yes|YES)
+					build_and_inline=1
+					break
+				;;
+				N|n|No|no|NO)
+					"$EASYTLS_PRINTF" '\n%s\n' \
+						'  * TLS-Crypt-V2 Key built. Inline-file not created.'
+					break
+				;;
+				*)
+					: # Ignore
+				;;
+			esac
+		done
+
+		# Invoke inline
+		if [ $build_and_inline ]
+		then
+			# Set opt_nokey
+			interactive_opt_nokey
+
+			# Set opt_no_md
+			interactive_opt_no_md
+
+			# Set opt_add_hw
+			interactive_opt_add_hw
+
+			# Print command
+			interactive_show_cmd
+
+			# Create inline
+			inline_tls_crypt_v2 "$opt_client_name" \
+				${opt_nokey} ${opt_no_md} ${opt_add_hw} || {
+					error_msg '**Create inline-file failed'
+					return 1
+					}
+		fi
+
+		return 0
+	;;
+	*)	# Other value -> Quit
+		"$EASYTLS_PRINTF" '\n%s\n' '  Quit!'
+	;;
+	esac
+} # => interactive_build ()
+
+# Inter-active inline menu
+interactive_inline ()
+{
+	"$EASYTLS_PRINTF" '\n%s\n' 'Easy-TLS Inter-active Inline-file builder Menu.'
+
+	# Verify PKI
+	interactive_verify_pki || {
+		error_msg 'Please create and/or specify your PKI directory.'
+		return 1
+		}
+
+	# Capture the command line to inline
+	cmd_line='inline'
+
+	# Choose Key
+	ia_question_help='
+* Available Inline-file types:'
+	ia_question_text='
+  [1] Inline-file with TLS-Auth key for Server
+  [2] Inline-file with TLS-Auth key for Client
+  [3] Inline-file with TLS-Crypt-V1 key for Server
+  [4] Inline-file with TLS-Crypt-V1 key for Client
+  [5] Inline-file with TLS-Crypt-V2 Server key
+  [6] Inline-file with TLS-Crypt-V2 Client key
+
+  Select the type of Inline-file to build:'
+	interactive_question
+
+	case $ia_answer in
+	1|2)
+		# Inline TLS Auth Server|Client
+		cert_type='Client'
+		[ "$ia_answer" = '1' ] && cert_type='Server'
+
+		"$EASYTLS_PRINTF" '\n%s\n' "* Create TLS-Auth $cert_type inline-file"
+		cmd_line="${cmd_line}-tls-auth"
+
+		# Set commonName
+		interactive_common_name
+
+		# Set key_dir
+		interactive_key_direction
+
+		# Set opt_nokey
+		interactive_opt_nokey
+
+		# Set opt_add_dh
+		default_dh_file="$EASYRSA_PKI/dh.pem"
+		if [ -f "$default_dh_file" ]
+		then
+			[ "$cert_type" = 'Server' ] && interactive_opt_add_dh
+		else
+			[ "$cert_type" = 'Server' ] && interactive_custom_dh
+		fi
+
+		# Print command
+		interactive_show_cmd
+
+		# Build .inline
+		inline_tls_auth "$common_name" "$key_direction" \
+			${opt_nokey} ${opt_add_dh} ${opt_custom_dh} || {
+				error_msg '**Create inline-file failed'
+				return 1
+				}
+	;;
+	3|4)
+		# Inline TLS Crypt v1 Server or Client
+		cert_type='Client'
+		[ "$ia_answer" = '3' ] && cert_type='Server'
+
+		"$EASYTLS_PRINTF" '\n%s\n' "* Create TLS-Crypt-V1 $cert_type inline-file"
+		cmd_line="${cmd_line}-tls-crypt"
+
+		# Set commonName
+		interactive_common_name
+
+		# Set opt_nokey
+		interactive_opt_nokey
+
+		# Set opt_add_dh
+		default_dh_file="$EASYRSA_PKI/dh.pem"
+		if [ -f "$default_dh_file" ]
+		then
+			[ "$cert_type" = 'Server' ] && interactive_opt_add_dh
+		else
+			[ "$cert_type" = 'Server' ] && interactive_custom_dh
+		fi
+
+		# Print command
+		interactive_show_cmd
+
+		# Build .inline
+		inline_tls_crypt_v1 "$common_name" \
+			${opt_nokey} ${opt_add_dh} ${opt_custom_dh} || {
+				error_msg '**Create inline-file failed'
+				return 1
+				}
+	;;
+	5)	# Inline TLS Crypt v2 Server
+		"$EASYTLS_PRINTF" '\n%s\n' '* Create TLS-Crypt-v2 Server inline-file'
+		cmd_line="${cmd_line}-tls-crypt-v2"
+		cert_type="Server"
+
+		# Set commonName
+		interactive_common_name
+
+		# Verify purpose
+		interactive_verify_cert
+
+		# Set opt_nokey
+		interactive_opt_nokey
+
+		# Set opt_add_dh
+		default_dh_file="$EASYRSA_PKI/dh.pem"
+		if [ -f "$default_dh_file" ]
+		then
+			interactive_opt_add_dh
+		else
+			interactive_custom_dh
+		fi
+
+		# Print command
+		interactive_show_cmd
+
+		# Build .inline
+		inline_tls_crypt_v2 "$common_name" \
+			${opt_nokey} ${opt_add_dh} || {
+				error_msg '**Create inline-file failed'
+				return 1
+				}
+	;;
+	6)	# Inline TLS Crypt v2 Client
+		"$EASYTLS_PRINTF" '\n%s\n' '* Create TLS-Crypt-v2 Client inline-file'
+		cmd_line="${cmd_line}-tls-crypt-v2"
+		cert_type="Client"
+
+		# Set commonName
+		interactive_common_name
+
+		# Verify purpose
+		interactive_verify_cert
+
+		# Set option --sub-key-name
+		interactive_sub_key_name
+
+		# Set opt_nokey
+		interactive_opt_nokey
+
+		# Set opt_no_md
+		interactive_opt_no_md
+
+		# Set opt_add_hw
+		interactive_opt_add_hw
+
+		# Print command
+		interactive_show_cmd
+
+		# Build .inline
+		inline_tls_crypt_v2 \
+			"$common_name" ${opt_nokey} ${opt_no_md} ${opt_add_hw} || {
+				error_msg '**Create inline-file failed'
+				return 1
+				}
+	;;
+	*)	# Other value -> Quit
+		"$EASYTLS_PRINTF" '\n%s\n' '  Quit!'
+	esac
+} # => interactive_inline ()
+
+# Inter-active Remove menu
+interactive_remove ()
+{
+	"$EASYTLS_PRINTF" '\n%s\n' 'Easy-TLS Inter-active Remove Menu.'
+
+	# Verify PKI
+	interactive_verify_pki || {
+		error_msg 'Please create and/or specify your PKI directory.'
+		return 1
+		}
+
+	# Capture the command line to inline
+	cmd_line='remove'
+
+	# Choose Key
+	ia_question_help='
+* Available file types:'
+	ia_question_text='
+  [1] TLS-Crypt-V2 Client inline-file
+  [2] TLS-Crypt-V2 Client key
+  [3] TLS-Crypt-V2 Server inline-file
+  [4] TLS-Crypt-V2 Server key
+  [5] TLS-Crypt-V1 key
+  [6] TLS-Auth key
+
+  Select the type of file to remove:'
+	interactive_question
+
+	case $ia_answer in
+	1)	# Remove Client inline-file
+		"$EASYTLS_PRINTF" '\n%s\n' '* Remove TLS-Crypt-v2 Client inline-file'
+		cmd_line="${cmd_line}-inline"
+
+		# Set commonName
+		opt_name=""
+		cert_type='Client'
+		interactive_common_name
+		opt_name="$common_name"
+
+		# Set option --sub-key-name
+		interactive_sub_key_name
+
+		# Confirm
+		interactive_remove_warning 'remove-tls-crypt-v2-client-inline'
+
+		# Print command
+		interactive_show_cmd
+
+		# Enable internal batch_mode
+		batch_mode=1
+
+		# Remove .inline
+		remove_inline "$opt_name" || {
+			error_msg '**Remove inline-file failed'
+			return 1
+			}
+
+		# Disable internal batch_mode
+		unset batch_mode
+
+		"$EASYTLS_PRINTF" '\n%s\n' "  * TLS-Crypt-V2 Client inline removed: $key_file"
+
+		# save me! - Changes have been made
+		save_wiscii_hash || die "Master hash save failed"
+
+		# Request remove_tlskey
+		cmd_line="remove-tlskey $opt_name"
+		default='Y'
+		ia_question_help="
+* Do you want to remove the corresponding TLS-Crypt-V2 key ?
+
+  * Default: $default"
+		ia_question_text='
+  Enter (y)es or (n)o:'
+		while :
+		do
+			interactive_question
+			ia_answer="${ia_answer:-$default}"
+			case "$ia_answer" in
+				Y|y|Yes|yes|YES)
+					remove_inline_and_tlskey=1
+					break
+				;;
+				N|n|No|no|NO)
+					break
+				;;
+				*)
+					: # Ignore
+				;;
+			esac
+		done
+
+		# Invoke remove_tlskey
+		if [ $remove_inline_and_tlskey ]
+		then
+			# Print command
+			interactive_show_cmd
+
+			# Enable internal batch_mode
+			batch_mode=1
+
+			# Remove TLS key
+			remove_tlskey "$opt_name" || {
+				error_msg '**Remove TLS-key failed'
+				return 1
+				}
+
+			# Disable internal batch_mode
+			unset batch_mode
+
+			"$EASYTLS_PRINTF" '\n%s\n' "  * TLS-Crypt-V2 Client key removed: $key_file"
+		else
+			"$EASYTLS_PRINTF" '\n%s\n' \
+				"  * Inline-file removed. "
+			"$EASYTLS_PRINTF" '\n%s\n'	'    TLS-Crypt-V2 Key is unchanged.'
+		fi
+	;;
+	2)	# Remove client key
+		"$EASYTLS_PRINTF" '\n%s\n' '* Remove TLS-Crypt-V2 Client key'
+		cmd_line="${cmd_line}-tlskey"
+
+		# Set Client name
+		opt_name=""
+		cert_type='Client'
+		interactive_common_name
+		opt_name="$common_name"
+
+		# Set option --sub-key-name
+		interactive_sub_key_name
+
+		# Append --sub-key-name if specifies
+		if [ "$TLSKEY_SUBNAME" = 'NOSUBKEY' ]
+		then
+			key_name="${opt_name}"
+		else
+			key_name="${opt_name}-$TLSKEY_SUBNAME"
+		fi
+
+		# Set file names
+		key_file="${EASYTLS_PKI}/${key_name}-tls-crypt-v2.key"
+		metadata_debug="${EASYTLS_MD_DIR}/${key_name}-tls-crypt-v2.metadata"
+
+		# Confirm
+		interactive_remove_warning 'remove-tls-crypt-v2-client-key'
+
+		# Print command
+		interactive_show_cmd
+
+		# Enable internal batch_mode
+		batch_mode=1
+
+		# Remove key
+		remove_tlskey "$opt_name" || {
+			error_msg '**Remove TLS-key failed'
+			return 1
+			}
+
+		# Disable internal batch_mode
+		unset batch_mode
+
+		"$EASYTLS_PRINTF" '\n%s\n' "  * TLS-Crypt-V2 Client key removed: $key_file"
+	;;
+	3)	# Remove Server inline-file
+		"$EASYTLS_PRINTF" '\n%s\n' '* Remove TLS-Crypt-v2 Server inline-file'
+		cmd_line="${cmd_line}-inline"
+
+		# Set commonName
+		opt_name=""
+		cert_type='Server'
+		interactive_common_name
+		opt_name="$common_name"
+		unset ia_extra_help
+
+		inline_file="${EASYTLS_PKI}/${opt_name}.inline"
+		[ -f "$inline_file" ] || die "Missing inline-file: $inline_file"
+
+		# Confirm
+		interactive_remove_warning 'remove-tls-crypt-v2-server-inline'
+
+		# Print command
+		interactive_show_cmd
+
+		# Enable internal batch_mode
+		batch_mode=1
+
+		# Remove .inline
+		remove_inline "$opt_name" || {
+				error_msg '**Remove inline-file failed'
+				return 1
+				}
+
+		# Disable internal batch_mode
+		unset batch_mode
+
+		# save me! - Changes have been made
+		save_wiscii_hash || die "Master hash save failed"
+
+		# Request remove_tlskey
+		cmd_line="remove-tlskey $opt_name"
+		default='Y'
+		ia_question_help="
+* Do you want to remove the corresponding TLS-Crypt-V2 key ?
+
+  * Default: $default"
+		ia_question_text='
+  Enter (y)es or (n)o:'
+		while :
+		do
+			interactive_question
+			ia_answer="${ia_answer:-$default}"
+			case "$ia_answer" in
+				Y|y|Yes|yes|YES)
+					remove_inline_and_tlskey=1
+					break
+				;;
+				N|n|No|no|NO)
+					break
+				;;
+				*)
+					: # Ignore
+				;;
+			esac
+		done
+
+		# Invoke remove_tlskey
+		if [ $remove_inline_and_tlskey ]
+		then
+		key_file="${EASYTLS_PKI}/${opt_name}-tls-crypt-v2.key"
+		[ -f "$key_file" ] || \
+			die "TLS-Crypt-V2 key does not exist: $key_file"
+
+		# Confirm
+		confirm 'Are you sure you want to delete this key (CANNOT be undone): ' \
+			'yes' "
+* If you remove a TLS-Crypt-V2 Server key which has been used
+  to build any TLS-Crypt-V2 Client keys then those Client keys
+  and their corresponding inline files will all be invalid.
+
+  Key file:
+  * $key_file"
+
+			# Print command
+			interactive_show_cmd
+
+			# Enable internal batch_mode
+			batch_mode=1
+
+			# Remove TLS key
+			remove_tlskey "$opt_name" || {
+				error_msg '**Remove TLS-key failed'
+				return 1
+				}
+
+			# Disable internal batch_mode
+			unset batch_mode
+		else
+			"$EASYTLS_PRINTF" '\n%s\n' \
+				'  * Inline-file removed. TLS-Crypt-V2 key is unchanged.'
+		fi
+	;;
+	4)	# Remove Server key
+		"$EASYTLS_PRINTF" '\n%s\n' '* Remove TLS-Crypt-V2 Server key'
+		cmd_line="${cmd_line}-tlskey"
+
+		# Set Server name
+		opt_name=""
+		cert_type='Server'
+		interactive_common_name
+		opt_name="$common_name"
+
+		key_file="${EASYTLS_PKI}/${opt_name}-tls-crypt-v2.key"
+		[ -f "$key_file" ] || \
+			die "TLS-Crypt-V2 key does not exist: $key_file"
+
+		# Confirm
+		interactive_remove_warning 'remove-tls-crypt-v2-server-key'
+
+		# Print command
+		interactive_show_cmd
+
+		# Enable internal batch_mode
+		batch_mode=1
+
+		# Remove key
+		remove_tlskey "$opt_name" || {
+			error_msg '**Remove TLS-Crypt-V2 key failed'
+			return 1
+			}
+
+		# Disable internal batch_mode
+		unset batch_mode
+
+		"$EASYTLS_PRINTF" '\n%s\n' "  * TLS-Crypt-V2 Server key removed: $key_file"
+	;;
+	5)	# tls-crypt key
+		"$EASYTLS_PRINTF" '\n%s\n' '* Remove TLS-Crypt key'
+		cmd_line="${cmd_line}-tlskey"
+
+		key_file="${EASYTLS_PKI}/tls-crypt.key"
+		[ -f "$key_file" ] || \
+			die "TLS-Crypt key does not exist: $key_file"
+
+		# Confirm
+		interactive_remove_warning 'remove-tls-crypt-key'
+
+		# Print command
+		interactive_show_cmd
+
+		# Enable internal batch_mode
+		batch_mode=1
+
+		"$EASYTLS_RM" "$key_file" || {
+			error_msg '**Remove TLS-Crypt key failed'
+			return 1
+			}
+
+		# Disable internal batch_mode
+		unset batch_mode
+
+		"$EASYTLS_PRINTF" '\n%s\n' "  * TLS-Crypt key removed: $key_file"
+	;;
+	6)	# tls-auth key
+		"$EASYTLS_PRINTF" '\n%s\n' '* Remove TLS-Auth key'
+		cmd_line="${cmd_line}-tlskey"
+
+		key_file="${EASYTLS_PKI}/tls-auth.key"
+		[ -f "$key_file" ] || \
+			die "TLS-Auth key does not exist: $key_file"
+
+		# Confirm
+		interactive_remove_warning 'remove-tls-auth-key'
+
+		# Print command
+		interactive_show_cmd
+
+		# Enable internal batch_mode
+		batch_mode=1
+
+		"$EASYTLS_RM" "$key_file" || {
+			error_msg '**Remove TLS-Auth key failed'
+			return 1
+			}
+
+		# Disable internal batch_mode
+		unset batch_mode
+
+		"$EASYTLS_PRINTF" '\n%s\n' "  * TLS-Auth key removed: $key_file"
+	;;
+	*)	# Other value -> Quit
+		"$EASYTLS_PRINTF" '\n%s\n' '  Quit!'
+	;;
+	esac
+} # => interactive_remove ()
+
+# Issue a remove warning
+interactive_remove_warning ()
+{
+	[ $EASYTLS_BATCH ] || \
+		"$EASYTLS_PRINTF" '\n%s\n%s\n%s' '  ###########' '  # WARNING #' '  ###########'
+	case $1 in
+	remove-tls-auth-key)
+	# TLS-Auth key
+		[ -f "$key_file" ] || die "Missing file: $key_file"
+		confirm 'Are you sure you want to delete this key (CANNOT be undone): ' \
+			'yes' "
+* If you remove a TLS-Auth key which has been used to build any
+  inline-files then those inline-files will all be invalid.
+
+  Key file:
+  * $key_file"
+	;;
+	remove-tls-crypt-key)
+	# TLS-Crypt key
+		[ -f "$key_file" ] || die "Missing file: $key_file"
+		confirm 'Are you sure you want to delete this key (CANNOT be undone): ' \
+			'yes' "
+* If you remove a TLS-Crypt key which has been used to build any
+  inline-files then those inline-files will all be invalid.
+
+  Key file:
+  * $key_file"
+	;;
+	remove-tls-crypt-v2-server-key)
+	# TLS-Crypt-V2 Server key
+		[ -f "$key_file" ] || die "Missing file: $key_file"
+		confirm 'Are you sure you want to delete this key (CANNOT be undone): ' \
+			'yes' "
+* If you remove a TLS-Crypt-V2 Server key which has been used
+  to build any TLS-Crypt-V2 Client keys then those Client keys
+  and their corresponding inline files will all be invalid.
+
+  Key file:
+  * $key_file"
+	;;
+	remove-tls-crypt-v2-client-key)
+	# TLS-Crypt-V2 Client key
+		[ -f "$key_file" ] || die "Missing file: $key_file"
+		confirm 'Are you sure you want to delete this key (CANNOT be undone): ' \
+			'yes' "
+* If you remove a TLS-Crypt-V2 Client key then you can easily
+  build a new one from the same TLS-Crypt-V2 Server key.
+
+  Key file:
+  * $key_file"
+	;;
+	remove-tls-auth-inline)
+	# TLS-Auth inline
+		[ -f "$inline_file" ] || die "Missing file: $inline_file"
+		confirm 'Are you sure you want to delete this inline-file: ' \
+			'yes' "
+* When you remove an inline-file you can easily build a new one.
+
+  Inline file:
+  * $inline_file"
+	;;
+	remove-tls-crypt-inline)
+	# TLS-Crypt inline
+		[ -f "$inline_file" ] || die "Missing file: $inline_file"
+		confirm 'Are you sure you want to delete this inline-file: ' \
+			'yes' "
+* When you remove an inline-file you can easily build a new one.
+
+  Inline file:
+  * $inline_file"
+	;;
+	remove-tls-crypt-v2-server-inline)
+	# TLS-Crypt-V2 Server inline
+		[ -f "$inline_file" ] || die "Missing file: $inline_file"
+		confirm 'Are you sure you want to delete this inline-file: ' \
+			'yes' "
+* When you remove an inline-file you can easily build a new one.
+
+  Inline file:
+  * $inline_file"
+	;;
+	remove-tls-crypt-v2-client-inline)
+	# TLS-Crypt-V2 Client inline
+		[ -f "$inline_file" ] || die "Missing file: $inline_file"
+		confirm 'Are you sure you want to delete this inline-file: ' \
+			'yes' "
+* When you remove an inline-file you can easily build a new one.
+
+  Inline file:
+  * $inline_file"
+	;;
+	*)
+		die "Cannot issue a warning for unknown option: $1"
+	;;
+	esac
+} # => interactive_remove_warning ()
+
+# Configure scripts
+interactive_scripts ()
+{
+	"$EASYTLS_PRINTF" '\n%s\n' 'Easy-TLS Inter-active Script Configuration Menu.'
+
+	# Verify PKI
+	interactive_verify_pki || {
+		error_msg 'Please create and/or specify your PKI directory.'
+		return 1
+		}
+
+	# CA dir used for inter-active script must be fully expanded
+	if [ "${EASYRSA_PKI%/*}" = "$PWD" ]
+	then
+		set_var EASYTLS_CA_FULLPATH "$EASYRSA_PKI"
+		[ -f "$EASYTLS_CA_FULLPATH/ca.crt" ] || \
+		die "Missing: $EASYTLS_CA_FULLPATH/ca.crt"
+	else
+		set_var EASYTLS_CA_FULLPATH "$PWD"
+		[ -f "$EASYTLS_CA_FULLPATH/$EASYRSA_PKI/ca.crt" ] || \
+		die "Missing full path to CA: $EASYTLS_CA_FULLPATH/$EASYRSA_PKI/ca.crt"
+	fi
+
+	# Capture the command line to inline
+	cmd_line=''
+
+	# Choose Key
+	ia_question_help='
+* Available script which can be configured:'
+	ia_question_text='
+  [1] TLS Crypt v2 Verify (easytls-cryptv2-verify.sh)
+      (Includes hwaddr verification script: easytls-cryptv2-client-connect.sh)
+
+  Select the type of script to configure:'
+	interactive_question
+
+	case $ia_answer in
+	1)	# easytls-cryptv2-verify.sh
+
+		[ -f "$EASYTLS_VERIFY_V2_SH" ] || {
+			help_note='Download from: https://github.com/TinCanTech/easy-tls'
+			die "Required script missing: $EASYTLS_VERIFY_V2_SH"
+			}
+
+		[ -f "$EASYTLS_CLICON_SH" ] || {
+			help_note='Download from: https://github.com/TinCanTech/easy-tls'
+			die "Required script missing: $EASYTLS_CLICON_SH"
+			}
+
+		# -c|--ca=<path> - opt_ca_path
+		interactive_ca_path
+
+		# Hash algorithm
+		interactive_hashalgo
+
+		# -g|--custom-group=<GROUP> - opt_customg
+		interactive_custom_group
+
+		# -x|--max-tls-age - opt_key_age
+		interactive_key_age
+
+		# -d|--disable-list - opt_disable_list
+		interactive_disabled_list
+
+		# --v1|--via-crl
+		# --v2|--via-ca
+		# --v3|--via-index
+		# opt_x509_method
+		# opt_load_ca_id
+		# opt_preload_id
+		interactive_x509_method
+
+		# Openvpn PID - opt_openvpn_pid
+		interactive_openvpn_pid
+
+		# -t|--tmp-dir - opt_tmp_dir
+		[ $opt_openvpn_pid ] && interactive_tmp_dir
+
+		# -a|-p|-k hardware requirements
+		[ $opt_openvpn_pid ] && interactive_hw_required
+
+	if [ $OS ]
+	then
+		# Windows
+		# Create config
+		{
+			"$EASYTLS_PRINTF" '%s\n' '# Easy-TLS script configuration'
+			"$EASYTLS_PRINTF" '%s\n' 'script-security 2'
+			"$EASYTLS_PRINTF" '%s'   'tls-crypt-v2-verify'
+			"$EASYTLS_PRINTF" ' %s'  "'"
+			"$EASYTLS_PRINTF" '%s'   "${EASYTLS_WIN_TC2V_BAT}"
+			"$EASYTLS_PRINTF" '%s\n' "'"
+			[ $opt_openvpn_pid ] && "$EASYTLS_PRINTF" '%s\n' \
+				"${opt_openvpn_pid} ${opt_tmp_dir}/easytls-server.pid"
+			[ $opt_openvpn_pid ] && {
+				"$EASYTLS_PRINTF" '%s'   'tls-verify'
+				"$EASYTLS_PRINTF" ' %s'  "'"
+				"$EASYTLS_PRINTF" '%s'   "${EASYTLS_WIN_TV_BAT}"
+				"$EASYTLS_PRINTF" '%s\n' "'"
+				}
+			[ $opt_openvpn_pid ] && {
+				"$EASYTLS_PRINTF" '%s'   'client-connect'
+				"$EASYTLS_PRINTF" ' %s'  "'"
+				"$EASYTLS_PRINTF" '%s'   "${EASYTLS_WIN_CCON_BAT}"
+				"$EASYTLS_PRINTF" '%s\n' "'"
+				}
+		} > "$EASYTLS_SRVSCRIPT_CFG" || die "Failed to create config file"
+
+		# Write easytls-cryptv2-verify.bat
+		"$EASYTLS_SED" -i \
+			-e "s\`^SET WORK_DIR=.*$\`SET WORK_DIR=${opt_tmp_dir}\`g" \
+			-e "s\`^SET CA_DIR=.*$\`SET CA_DIR=${opt_ca_path}\`g" \
+			-e "s\`^SET HASH_ALGO=.*$\`SET HASH_ALGO=${opt_hashalgo}\`g" \
+			-e "s\`^SET CUST_GRP=.*$\`SET CUST_GRP=${opt_customg}\`g" \
+			"$EASYTLS_WIN_TC2V_BAT"
+
+		# Write easytls-verify.bat
+		"$EASYTLS_SED" -i \
+			-e "s\`^SET WORK_DIR=.*$\`SET WORK_DIR=${opt_tmp_dir}\`g" \
+			-e "s\`^SET CA_DIR=.*$\`SET CA_DIR=${opt_ca_path}\`g" \
+			"$EASYTLS_WIN_TV_BAT"
+
+		# Write easytls-cryptv2-client-connect.bat
+		"$EASYTLS_SED" -i \
+			-e "s\`^SET WORK_DIR=.*$\`SET WORK_DIR=${opt_tmp_dir}\`g" \
+			-e "s\`^SET HWADDR_REQ=.*$\`SET HWADDR_REQ=${opt_hw_required}\`g" \
+			"$EASYTLS_WIN_CCON_BAT"
+
+		# Windows instructions
+		"$EASYTLS_PRINTF" '\n%s\n\n' '===================='
+		"$EASYTLS_PRINTF" '%s\n\n' '* Configure OpenVPN to use easytls scripts'
+		"$EASYTLS_PRINTF" '%s\n'   '  Add this to your OpenVPN Server config file:'
+		"$EASYTLS_PRINTF" '\n    %s %s\n' 'config' "$EASYTLS_SRVSCRIPT_CFG"
+	else
+		# NIX
+		# Create config
+		{
+			# easytls-cryptv2-verify.sh
+			"$EASYTLS_PRINTF" '%s\n' '# Easy-TLS script configuration'
+			"$EASYTLS_PRINTF" '%s\n' 'script-security 2'
+			"$EASYTLS_PRINTF" '%s'   'tls-crypt-v2-verify'
+			"$EASYTLS_PRINTF" ' %s'  "'"
+			"$EASYTLS_PRINTF" '%s'   "$EASYTLS_VERIFY_V2_SH -v"
+			"$EASYTLS_PRINTF" ' %s'  "-c=${opt_ca_path}"
+			[ $opt_hashalgo ]     && "$EASYTLS_PRINTF" ' %s' "${opt_hashalgo}"
+			[ $opt_customg ]      && "$EASYTLS_PRINTF" ' %s' "${opt_customg}"
+			[ $opt_key_age ]      && "$EASYTLS_PRINTF" ' %s' "${opt_key_age}"
+			[ $opt_disable_list ] && "$EASYTLS_PRINTF" ' %s' "${opt_disable_list}"
+			[ $opt_tmp_dir ]      && "$EASYTLS_PRINTF" ' %s' "-t=${opt_tmp_dir}"
+			[ $opt_x509_method ]  && "$EASYTLS_PRINTF" ' %s' "${opt_x509_method}"
+			[ $opt_load_ca_id ]   && "$EASYTLS_PRINTF" ' %s' "${opt_load_ca_id}"
+			[ $opt_preload_id ]   && "$EASYTLS_PRINTF" ' %s' "${opt_preload_id}"
+			"$EASYTLS_PRINTF" '%s\n' "'"
+			[ $opt_openvpn_pid ] && "$EASYTLS_PRINTF" '%s\n' \
+				"${opt_openvpn_pid} ${opt_tmp_dir}/easytls-server.pid"
+
+			# easytls-verify.sh - Required for --tls-auth or --tls-crypt clients
+			[ $opt_openvpn_pid ] && {
+				"$EASYTLS_PRINTF" '%s'   'tls-verify'
+				"$EASYTLS_PRINTF" ' %s'  "'"
+				"$EASYTLS_PRINTF" '%s'   "${EASYTLS_VERIFY_V1_SH} -v"
+				"$EASYTLS_PRINTF" ' %s'  "-c=${opt_ca_path}"
+				"$EASYTLS_PRINTF" ' %s'  "-t=${opt_tmp_dir}"
+				"$EASYTLS_PRINTF" '%s\n' "'"
+				}
+
+			# easytls-cryptv2-client-connect.sh
+			[ $opt_openvpn_pid ] && {
+				"$EASYTLS_PRINTF" '%s'   'client-connect'
+				"$EASYTLS_PRINTF" ' %s'  "'"
+				"$EASYTLS_PRINTF" '%s'   "${EASYTLS_CLICON_SH} -v"
+				"$EASYTLS_PRINTF" ' %s'  "$opt_hw_required"
+				"$EASYTLS_PRINTF" ' %s'  "-t=${opt_tmp_dir}"
+				"$EASYTLS_PRINTF" '%s\n' "'"
+				}
+		} > "$EASYTLS_SRVSCRIPT_CFG" || die "Failed to create config file"
+
+		# Linux instructions
+		"$EASYTLS_PRINTF" '\n%s\n\n' '===================='
+		"$EASYTLS_PRINTF" '%s\n\n' '* Configure OpenVPN to use easytls scripts'
+		"$EASYTLS_PRINTF" '%s\n'   '  Add this to your OpenVPN Server config file:'
+		"$EASYTLS_PRINTF" '\n    %s %s\n' 'config' "$EASYTLS_SRVSCRIPT_CFG"
+	fi
+	"$EASYTLS_PRINTF" '\n%s\n' '* Easy-TLS Scripts configuration completed'
+	;;
+	*)	# Other value -> Quit
+		"$EASYTLS_PRINTF" '\n%s\n' '  Quit!'
+	;;
+	esac
+
+	#easytls_verbose "hiding an error ?"
+
+} # => interactive_scripts ()
+
+# Set commonName
+interactive_common_name ()
+{
+	unset common_name
+	ia_question_help='
+* This field only requires the certificate commonName,
+  it does not require the complete file name.'
+	ia_question_text="
+  Enter the commonName of your * ${cert_type} * certificate:"
+
+	while :
+	do
+		interactive_question
+		common_name="$ia_answer"
+		cert_file="$EASYRSA_PKI/issued/$common_name.crt"
+		interactive_verify_cert && {
+			cmd_line="${cmd_line} $common_name"
+			break
+			}
+	done
+}
+
+# Verify the certificate and purpose
+interactive_verify_cert ()
+{
+	[ -f "$cert_file" ] || {
+		"$EASYTLS_PRINTF" '\n%s\n' "  ERROR: Missiing certificate $cert_file"
+		return 1
+		}
+
+	"$EASYTLS_GREP" -q "TLS Web $cert_type" "$cert_file" || {
+		"$EASYTLS_PRINTF" '\n%s\n' "  ERROR: Certificate must be a $cert_type"
+		return 1
+		}
+}
+
+# Automatically detect certificate type
+interactive_auto_cert_type ()
+{
+	unset cert_type
+	"$EASYTLS_GREP" -q 'TLS Web Server' "$cert_file" && is_server=1
+	"$EASYTLS_GREP" -q 'TLS Web Client' "$cert_file" && is_client=1
+	[ $is_server ] && [ $is_client ] && \
+		die "Unsupported certificate: Server&Client"
+	[ $is_server ] && cert_type='Server'
+	[ $is_client ] && cert_type='Client'
+}
+
+# Set option --sub-key-name
+interactive_sub_key_name ()
+{
+	unset sub_key_name
+	default='NOSUBKEY'
+	ia_question_help='
+* Each X509 Client certificate can have multiple TLS-Crypt-V2 keys,
+  these keys are referred to as Sub-keys.  Each Sub-key is used in
+  a separate inline file with the same X509 Client certificate.'
+	ia_question_text='
+  Enter the Sub-key Name for your key or leave blank to continue:'
+	interactive_question
+	ia_answer="${ia_answer:-$default}"
+	if [ "$ia_answer" != "$TLSKEY_SUBNAME" ]
+	then
+		sub_key_name="$ia_answer"
+		cmd_line="--sub-key-name=${sub_key_name} ${cmd_line}"
+		export TLSKEY_SUBNAME="${sub_key_name}"
+	else
+		# Otherwise this returns a hidden error
+		:
+	fi
+
+	[ "$TLSKEY_SUBNAME" = 'NOSUBKEY' ] || {
+	key_file="$EASYTLS_PKI/$cli_name-$TLSKEY_SUBNAME-tls-crypt-v2.key"
+	metadata_debug="$EASYTLS_MD_DIR/$cli_name-$TLSKEY_SUBNAME-tls-crypt-v2.metadata"
+	}
+}
+
+# Set key direction
+interactive_key_direction ()
+{
+	unset key_direction
+	if [ "$cert_type" = "Server" ]
+	then
+		default=0
+	else
+		default=1
+	fi
+	ia_question_help="
+* Select Key direction.   Default: Server=0 | Client=1
+
+  * Currently selected default is: $default"
+	ia_question_text='
+  Enter 0 or 1, or leave blank for default:'
+	while :
+	do
+		interactive_question
+		ia_answer="${ia_answer:-$default}"
+		case "$ia_answer" in
+			0|1)
+				key_direction="$ia_answer"
+				break
+			;;
+			*)
+				: # Ignore
+			;;
+		esac
+	done
+	cmd_line="${cmd_line} $key_direction"
+}
+
+# Set option nokey
+interactive_opt_nokey ()
+{
+	unset opt_nokey
+	default='Y'
+	ia_question_help="
+* Do you have the private key for this X509 certificate ?
+
+  * Default: $default"
+	ia_question_text='
+  Enter (y)es or (n)o:'
+	while :
+	do
+		interactive_question
+		ia_answer="${ia_answer:-$default}"
+		case "$ia_answer" in
+			Y|y|Yes|yes|YES)
+				break
+			;;
+			N|n|No|no|NO)
+				opt_nokey='nokey'
+				cmd_line="${cmd_line} nokey"
+				break
+			;;
+			*)
+				: # Ignore
+			;;
+		esac
+	done
+}
+
+# Set option add-dh
+interactive_opt_add_dh ()
+{
+	unset opt_add_dh
+	default='Y'
+	ia_question_help="
+* Do you want to inline the Diffie-Hellman parameters file ?
+
+  Default DH File: $default_dh_file
+
+  * Default: $default"
+	ia_question_text='
+  Enter (y)es or (n)o:'
+	while :
+	do
+		interactive_question
+		ia_answer="${ia_answer:-$default}"
+		case "$ia_answer" in
+			Y|y|Yes|yes|YES)
+				opt_add_dh='add-dh'
+				cmd_line="${cmd_line} add-dh"
+				break
+			;;
+			N|n|No|no|NO)
+				break
+			;;
+			*)
+				: # Ignore
+			;;
+		esac
+	done
+}
+
+# Set custom dh file
+interactive_custom_dh ()
+{
+	unset opt_custom_dh
+	default='none'
+	ia_question_help="
+* No Diffie-Hellman parameters file was found!
+
+  If you need to use a custom Diffie-Hellman parameters file then
+  enter the file location and name.
+
+  Otherwise, quit this menu and use Easy-RSA to create your
+  Diffie-Hellman parameters file.
+
+  If you leave this blank then the Diffie-Hellman parameters file
+  will NOT be add to the inline-file.
+
+  * Default: $default"
+	ia_question_text='
+  Enter the DH file name:'
+	interactive_question
+	ia_answer="${ia_answer:-$default}"
+	[ "$ia_answer" = "$default" ] || {
+		opt_add_dh='add-dh'
+		opt_custom_dh="$ia_answer"
+		cmd_line="--dh=\"${opt_custom_dh}\" ${cmd_line} add-dh"
+		export EASYRSA_DH_FILE="${opt_custom_dh}"
+		}
+}
+
+# Set option no-md
+interactive_opt_no_md ()
+{
+	unset opt_no_md
+	default='Y'
+	ia_question_help="
+* Do you want to include the client metadata in the inline file ?
+
+  The metadata does not contain any security sensitive data but
+  you may prefer to omit it.
+
+  * Default: $default"
+	ia_question_text='
+  Enter (y)es or (n)o:'
+	while :
+	do
+		interactive_question
+		ia_answer="${ia_answer:-$default}"
+		case "$ia_answer" in
+			Y|y|Yes|yes)
+				break
+			;;
+			N|n|No|no)
+				opt_no_md='no-md'
+				cmd_line="${cmd_line} no-md"
+				break
+			;;
+			*)
+				: # Ignore
+			;;
+		esac
+	done
+}
+
+# Set option add-hw
+interactive_opt_add_hw ()
+{
+	[ -n "$opt_no_md" ] && return 0
+	unset opt_add_hw
+	default='N'
+	ia_question_help="
+* Do you want to include the hardware addresses in the client metadata ?
+
+  * Default: $default"
+	ia_question_text='
+  Enter (y)es or (n)o:'
+	while :
+	do
+		interactive_question
+		ia_answer="${ia_answer:-$default}"
+		case "$ia_answer" in
+			Y|y|Yes|yes)
+				opt_add_hw='add-hw'
+				cmd_line="${cmd_line} add-hw"
+				break
+			;;
+			N|n|No|no)
+				break
+			;;
+			*)
+				: # Ignore
+			;;
+		esac
+	done
+}
+
+# Set hardware addresses
+interactive_hwaddr ()
+{
+	opt_hardware=""
+	ia_question_help='
+* You can lock this key to specific MAC hardware addresses.
+
+  Hardware addresses can be in the form of:
+
+    * 0123456789ab or 01-23-45-67-89-AB or 01:23:45:67:89:AB
+
+  If you do not require hardware address lock-down then leave this field blank.'
+	ia_question_text='
+  Enter a single MAC hardware address or leave blank to continue:'
+	while :
+	do
+		interactive_question
+		# EASYTLS_TLSCV2_HWLIST is set in verify stage so unset it
+		# EASYTLS_TLSCV2_HWLIST will be recreated by the build routine
+		[ -z "$ia_answer" ] && unset EASYTLS_TLSCV2_HWLIST && break
+
+		# Verify valid HWADDR
+		hw_addr_hex_check "$ia_answer" || return 1
+
+		# Add this HWADDR to the list
+		opt_hardware="$opt_hardware $ia_answer"
+	done
+	cmd_line="${cmd_line} ${opt_hardware}"
+}
+
+# Set CA path
+interactive_ca_path ()
+{
+	unset opt_ca_path
+	default="$EASYRSA_PKI"
+	ia_question_help="
+* Enter the path to the location of your Easy-RSA PKI directory.
+
+  Leave this blank to use the default Easy-RSA PKI path.
+
+  * Default: $default"
+	ia_question_text='
+  Enter the path name:'
+	while :
+	do
+		interactive_question
+		opt_ca_path="${ia_answer:-$default}"
+		[ -f "$EASYTLS_CA_FULLPATH/$EASYRSA_PKI/ca.crt" ] && {
+			opt_ca_path="$EASYTLS_CA_FULLPATH/$EASYRSA_PKI"
+			}
+		[ -f "$opt_ca_path/ca.crt" ] && break
+		print '
+  This path does not contain a valid CA certificate.'
+	done
+}
+
+# hash algorithm
+interactive_hashalgo ()
+{
+	opt_hashalgo="--hash=${EASYTLS_HASH_ALGO}"
+}
+
+# Set Custom Group
+interactive_custom_group ()
+{
+	opt_customg=""
+	default="$TLSKEY_CUSTOM_GRP"
+	ia_question_help='
+* All TLS-Crypt-V2 Client keys which are created by the same Server key
+  MUST use the same Custom-Group.
+
+  You can configure a single Custom-Group like so:
+
+    $ ./easytls config custom.group NAME
+
+  If you want to configure a Custom-Group now then quit this menu.
+
+  If you have configured your Custom-Group or do not require a Custom-Group
+  then leave this field blank.
+
+  * Your current Custom-Group is:'
+		[ "$TLSKEY_CUSTOM_GRP" = "EASYTLS" ] || \
+			ia_question_help="$ia_question_help $TLSKEY_CUSTOM_GRP"
+		ia_question_text='
+  Enter your Custom-Group or leave this blank to continue:'
+		interactive_question
+		opt_customg="${ia_answer:-$default}"
+		if [ -n "$opt_customg" ]
+		then
+			# This will only show if user enters a Custom-Group
+			# Otherwise, the Custom-Group is what-ever is configured
+			cmd_line="--custom-group=${opt_customg} ${cmd_line}"
+			export TLSKEY_CUSTOM_GRP="${opt_customg}"
+			opt_customg="-g=${opt_customg}"
+		else
+			# This is for scripts
+			#opt_customg="$TLSKEY_CUSTOM_GRP"
+			unset opt_customg
+		fi
+	easytls_verbose "Config: $opt_customg"
+}
+
+# Set tlskey allowed age in days
+interactive_key_age ()
+{
+	unset opt_key_age
+	default="1825" # 5 Years
+	ia_question_help="
+* Enter the maximum allowable age in days of your TLS-Crypt-V2 Client keys.
+
+  Enter 0 to disable this check.
+
+  Leave this blank to use the default age. (1825 days is 5 years)
+
+  * Default: $default"
+	ia_question_text='
+  Enter the allowable age:'
+	interactive_question
+	key_age_days="${ia_answer:-$default}"
+	[ "$key_age_days" = "1825" ] || opt_key_age="-x=${key_age_days}"
+	easytls_verbose "Config: $opt_key_age"
+}
+
+# Set use of disabled-list
+interactive_disabled_list ()
+{
+	unset opt_disable_list
+	default='Y'
+	ia_question_help="
+* Do you want to use the dynamic disabled-list ?
+
+  Leave this blank to use the default
+
+  * Default: $default"
+
+	ia_question_text='
+  Enter (y)es or (n)o:'
+	while :
+	do
+		interactive_question
+		ia_answer="${ia_answer:-$default}"
+		case "$ia_answer" in
+			Y|y|Yes|yes|YES)
+				break
+			;;
+			N|n|No|no|NO)
+				opt_disable_list="-d"
+				break
+			;;
+			*)
+				: # Ignore
+			;;
+		esac
+	done
+
+	easytls_verbose
+	easytls_verbose "Config: $opt_disable_list"
+}
+
+# Set the temp dir
+interactive_tmp_dir ()
+{
+	unset opt_tmp_dir
+	default="$EASYTLS"
+	ia_question_help="
+* Enter the temporary directory path where the script can write temp files.
+
+  * Default: $default"
+	ia_question_text='
+  Enter the path name:'
+	while :
+	do
+		interactive_question
+		opt_tmp_dir="${ia_answer:-$default}"
+		[ -z "$opt_tmp_dir" ] && break
+		[ -d "$opt_tmp_dir" ] && opt_tmp_dir="$opt_tmp_dir" && break
+		print '
+  This path is not valid.'
+	done
+	easytls_verbose "Config: $opt_tmp_dir"
+}
+
+# Set the X509 method
+interactive_x509_method ()
+{
+	unset opt_x509_method
+	default="0"
+	ia_question_help='
+* Select the X509 method to verify client certificates.
+
+  The default setting will not invoke any X509 code in the script
+  and only do TLS verification.  X509 is then handled by OpenVPN.'
+	ia_question_text='
+  [0] Do not use X509 for TLS key verification (default)
+  [1] Verify via CRL:   Verify your cert. using OpenSSL crl
+  [2] Verify via CA:    Verify your cert. using OpenSSL ca (DOES NOT WORK)
+  [3] Verify via Index: Verify your cert. by searching your current CRL
+
+  Select the X509 method to use or leave blank for default:'
+
+	while :
+	do
+		interactive_question
+		ia_answer="${ia_answer:-$default}"
+		case "$ia_answer" in
+		0)	# OFF
+			break
+		;;
+		1)	# crl
+			opt_x509_method="--v1"
+			break
+		;;
+		2)	# ca
+			opt_x509_method="--v2"
+			break
+		;;
+		3)	# index
+			opt_x509_method="--v3"
+			break
+		;;
+		'')	# default: off
+			break
+		;;
+		*)	# ERROR: Try again
+			:
+		;;
+		esac
+	done
+	easytls_verbose "Config: $opt_x509_method"
+
+	[ $opt_x509_method ] || return 0
+
+	unset opt_load_ca_id
+	unset opt_preload_id
+	default="off"
+	ia_question_help='
+* Select how the verify script loads the CA Identity.
+
+  The default setting is to build the CA-ID in the script (SLOWEST)'
+	ia_question_text='
+  [1] --cache-id:   Load the CA-ID from easytls-ca-identity.txt (MEDIUM)
+  [2] --preload-id: Load the CD-ID as a string with the script (FASTEST)
+
+  Select the loading method to use or leave blank for default:'
+
+	while :
+	do
+		interactive_question
+		case $ia_answer in
+		1)	# cache
+			opt_load_ca_id="-a"
+			break
+		;;
+		2)	# preload
+			opt_preload_id="-p="
+			break
+		;;
+		'')	# default: off
+			break
+		;;
+		*)	# ERROR: Try again
+			:
+		;;
+		esac
+	done
+
+	if [ $opt_preload_id ]
+	then
+		[ -f "$EASYTLS_CA_IDENTITY" ] || \
+			die "Cannot find your CA-ID file, init-tls first."
+
+		ia_question_help='
+* Enter your CD-ID.
+
+  Leave this blank to use the default Easy-TLS CA-ID.'
+		ia_question_text='
+  Enter the CA-ID:'
+
+		while :
+		do
+			interactive_question
+			if [ -n "$ia_answer" ]
+			then
+				opt_preload_id="$ia_answer"
+				"$EASYTLS_PRINTF" '%s' "$opt_preload_id" | "$EASYTLS_GREP" -q '^[[:xdigit:]]\{40\}$' || {
+					error_msg "Invalid CA-ID"
+					continue
+					}
+				break
+			else
+				opt_preload_id="$EASYTLS_MASTER_ID"
+				break
+			fi
+		done
+		opt_preload_id="-p=${opt_preload_id}"
+	fi
+
+	[ $opt_load_ca_id ] && easytls_verbose "Config: $opt_load_ca_id"
+	[ $opt_preload_id ] && easytls_verbose "Config: $opt_preload_id"
+} # => interactive_x509_method ()
+
+# Set use of Openvpn PID for client connect srcipt
+interactive_openvpn_pid ()
+{
+	unset opt_openvpn_pid
+	default='Y'
+	ia_question_help="
+* Do you want to use the Easy-TLS client-connect script ?
+
+  Leave this blank to use the default
+
+  * Default: $default"
+	ia_question_text='
+  Enter (y)es or (n)o:'
+	while :
+	do
+		interactive_question
+		ia_answer="${ia_answer:-$default}"
+		case "$ia_answer" in
+			Y|y|Yes|yes|YES)
+				opt_openvpn_pid='writepid'
+				break
+			;;
+			N|n|No|no|NO)
+				break
+			;;
+			*)
+				: # Ignore
+			;;
+		esac
+	done
+
+	easytls_verbose
+	easytls_verbose "Config: $opt_hw_required"
+}
+
+# Set use of hardware-address required
+interactive_hw_required ()
+{
+	unset opt_hw_required
+	default='1'
+	ia_question_help="
+* Select the level of hardware-address verification required ?
+
+  [0] Low - Allow all keys to connect, hwaddr verification is not enforced.
+  [1] Default - Keys with a hwaddr mismatch will be disconnected.
+  [2] Medium - Require all clients to push a hwaddr.
+  [3] High - Require all keys to have a hwaddr encrypted.
+
+   Leave this blank to use the default
+
+ * Default: $default"
+	ia_question_text='
+  Enter your required level:'
+	while :
+	do
+		interactive_question
+		ia_answer="${ia_answer:-$default}"
+		case "$ia_answer" in
+			0)
+				opt_hw_required='-a'
+				break
+			;;
+			1)
+				break
+			;;
+			2)
+				opt_hw_required='-p'
+				break
+			;;
+			3)
+				opt_hw_required='-k'
+				break
+			;;
+			*)
+				: # Ignore
+			;;
+		esac
+	done
+
+	easytls_verbose
+	easytls_verbose "Config: $opt_hw_required"
+}
+
+
+
+############################################################################
+#
+# IMPORT Section
+#
+
+# Import pre-existing TLS keys
+import_key ()
+{
+	# Temporarily disabled
+	error_msg "'import-key' has been disabled until further notice."
+	return 1
+
+	[ $# -ge 2 ] || \
+	die "Required option(s): <file-type> <file-name>"
+	key_type="$1"
+
+	# WARNING: Cannot verify the source is actually a valid key!
+	key_file="$2"
+	[ -f "$key_file" ] || die "Cannot find file: $key_file"
+
+	case "$key_type" in
+	tls-auth)
+		dest_key="$EASYTLS_PKI/tls-auth.key"
+		[ -f "$dest_key" ] && die "Key file exists: $dest_key"
+		"$EASYTLS_CP" "$key_file" "$dest_key" || \
+			die "Failed to import file: $key_file"
+		;;
+	tls-crypt)
+		dest_key="$EASYTLS_PKI/tls-crypt.key"
+		[ -f "$dest_key" ] && die "Key file exists: $dest_key"
+		"$EASYTLS_CP" "$key_file" "$dest_key" || \
+			die "Failed to import file: $key_file"
+		;;
+	tls-crypt-v2)
+		# Validate commonName
+		default_cert_CN="${key_file%.key}"
+		requested_cert_CN="${$3:-$default_cert_CN}"
+
+		cert_file="$EASYRSA_PKI/$requested_cert_CN.crt"
+		[ -f "$cert_file" ] || die "Cannot find file: $cert_file"
+		actual_cert_CN="$(openssl_crt_cn)"
+
+		if [ "$requested_cert_CN" = "$actual_cert_CN" ]
+		then
+			: # CN OK
+		else
+			help_note="Requested CN $requested_cert_CN"
+			die "does not match certificate $actual_cert_CN"
+		fi
+
+		dest_key="$EASYTLS_PKI/$actual_cert_CN-tls-crypt-v2.key"
+		[ -f "$dest_key" ] && die "Key file exists: $dest_key"
+		"$EASYTLS_CP" "$key_file" "$dest_key" || \
+			die "Failed to import file: $key_file"
+		;;
+	*)
+		die "Unknown key type: $key_type"
+		;;
+	esac
+
+	notice "Successfully imported $key_type key from $key_file to $dest_key"
+}
+
+
+
+############################################################################
+#
+# EASYTLS master a.k.a. wiscii hash Section
+#
+
+# riscii wiscii hash
+generate_wiscii_hash ()
+{
+	# If TLS has not been initialised then bail-out, use '00' to indicate this
+	counted_wiscii='00'
+	[ -f "$EASYTLS_INLINE_INDEX" ] && [ -f "$EASYTLS_KEY_INDEX" ] || return 0
+
+	# Clear accumulators
+	unset inline_seed
+	unset tlskey_seed
+
+	# Hash all inline-files
+	while read -r inline_hash inline_serial CN sub_key tlskey_serial
+	do
+		# Skip comment
+		[ -z "${inline_hash%%#*}" ] && continue
+
+		# Hash inline
+		inline_file="${EASYTLS_PKI}/${CN}.inline"
+		[ "$sub_key" = 'NOSUBKEY' ] || {
+			inline_file="${EASYTLS_PKI}/${CN}-${sub_key}.inline"
+			}
+
+		[ -f "$inline_file" ] || {
+			#warn "create_master_hash missing: $inline_file"
+			continue
+			}
+		inline_hash="$("$EASYRSA_OPENSSL" ${EASYTLS_HASH_ALGO} -r "$inline_file")"
+		inline_hash="${inline_hash%% *}"
+
+		# Append hash to seed
+		inline_seed="${inline_seed}${inline_hash}"
+
+	done < "$EASYTLS_INLINE_INDEX"
+
+	# Hash2 the inline-files seed
+	inline_hash2="$("$EASYTLS_PRINTF" '%s' "$inline_seed" | "$EASYRSA_OPENSSL" ${EASYTLS_HASH_ALGO} -r)"
+	inline_seed2="${inline_hash2%% *}"
+
+	# Hash all tls-keys
+	# tls-auth.key
+	tlskey_file="$EASYTLS_PKI/tls-auth.key"
+	if [ -f "$tlskey_file" ]
+	then
+		tlskey_hash="$("$EASYRSA_OPENSSL" ${EASYTLS_HASH_ALGO} -r "$tlskey_file")"
+		tlskey_hash="${tlskey_hash%% *}"
+		tlskey_seed="${tlskey_seed}${tlskey_hash}"
+	else
+		#warn "create_master_hash missing: $tlskey_file"
+		:
+	fi
+
+	tlskey_file="$EASYTLS_PKI/tls-crypt.key"
+	if [ -f "$tlskey_file" ]
+	then
+		tlskey_hash="$("$EASYRSA_OPENSSL" ${EASYTLS_HASH_ALGO} -r "$tlskey_file")"
+		tlskey_hash="${tlskey_hash%% *}"
+		tlskey_seed="${tlskey_seed}${tlskey_hash}"
+	else
+		#warn "create_master_hash missing: $tlskey_file"
+		:
+	fi
+
+	# tls-crypt-v2 keys
+	while read -r tlskey_serial cert_serial CN sub_key
+	do
+		# Skip comment
+		[ -z "${tlskey_serial%%#*}" ] && continue
+
+		# Quiet shellcheck
+		[ $cert_serial ]  && unset cert_serial
+
+		# Hash tlskey
+		tlskey_file="${EASYTLS_PKI}/${CN}-tls-crypt-v2.key"
+		[ "$sub_key" = 'NOSUBKEY' ] || {
+			tlskey_file="${EASYTLS_PKI}/${CN}-${sub_key}-tls-crypt-v2.key"
+			}
+		[ -f "$tlskey_file" ] || {
+			#warn "create_master_hash missing: $tlskey_file"
+			continue
+			}
+		tlskey_hash="$("$EASYRSA_OPENSSL" ${EASYTLS_HASH_ALGO} -r "$tlskey_file")"
+		tlskey_hash="${tlskey_hash%% *}"
+
+		# Append hash to seed
+		tlskey_seed="${tlskey_seed}${tlskey_hash}"
+
+	done < "$EASYTLS_KEY_INDEX"
+
+	# Hash2 the tls-keys seed
+	tlskey_hash2="$("$EASYTLS_PRINTF" '%s' "$tlskey_seed" | "$EASYRSA_OPENSSL" ${EASYTLS_HASH_ALGO} -r)"
+	tlskey_seed2="${tlskey_hash2%% *}"
+
+	# Include config hash
+	config_file_hash="$("$EASYTLS_CAT" "$EASYTLS_CONFIG_HASH")"
+
+	# master a.k.a. wiscii hash
+	wiscii_seed2="${config_file_hash}${tlskey_seed2}${inline_seed2}"
+	wiscii_hash2="$("$EASYTLS_PRINTF" '%s' "$wiscii_seed2" | "$EASYRSA_OPENSSL" ${EASYTLS_HASH_ALGO} -r)"
+	counted_wiscii="${wiscii_hash2%% *}"
+}
+
+# Save wiscii hash
+save_wiscii_hash ()
+{
+	[ $EASYTLS_TRAVIS_CI ] && return 0
+	if [ -f "$EASYTLS_WISCII_HASH" ]
+	then
+		bottled_wiscii="$("$EASYTLS_CAT" "$EASYTLS_WISCII_HASH")"
+	else
+		bottled_wiscii=""
+	fi
+
+	generate_wiscii_hash
+
+	# TLS not initialised
+	[ "$counted_wiscii" = '00' ] && return 0
+	# No files changed
+	[ "$counted_wiscii" = "$bottled_wiscii" ] && return 0
+
+	# Test it here Only!
+	"$EASYTLS_PRINTF" '%s' "$counted_wiscii" | \
+		"$EASYTLS_GREP" -q '[^[:xdigit:]]' && {
+			error_msg "save_wiscii_hash - Hashing error: $counted_wiscii"
+			return 1
+			}
+	hash_size=${#counted_wiscii}
+
+	case ${EASYTLS_HASH_ALGO} in
+	SHA1)
+		[ $hash_size -eq 40 ] || {
+			error_msg "save_wiscii_hash - SHA1 size: $counted_wiscii"
+			return 1
+			}
+	;;
+	SHA256)
+		[ $hash_size -eq 64 ] || {
+			error_msg "save_wiscii_hash - SHA256 size: $counted_wiscii"
+			return 1
+			}
+	;;
+	*)
+		error_msg "save_wiscii_hash - Unknown algorithm: ${EASYTLS_HASH_ALGO}"
+		return 1
+	;;
+	esac
+
+	# Save it
+	"$EASYTLS_PRINTF" '%s' "$counted_wiscii" > "$EASYTLS_WISCII_HASH" || {
+		error_msg 'Failed to save master hash'
+		return 1
+		}
+
+	easytls_verbose "Master hash save OK: $counted_wiscii"
+}
+
+# Verify wiscii hash
+verify_wiscii_hash ()
+{
+	[ $verify_file_hash_disabled ] && return 0
+	[ $EASYTLS_TRAVIS_CI ] && return 0
+	if [ -f "$EASYTLS_WISCII_HASH" ]
+	then
+		bottled_wiscii="$("$EASYTLS_CAT" "$EASYTLS_WISCII_HASH")"
+	else
+		bottled_wiscii=""
+	fi
+
+	generate_wiscii_hash
+
+	# TLS not initialised
+	[ "$counted_wiscii" = '00' ] && return 0
+
+	# hash match or error
+	[ "$counted_wiscii" = "$bottled_wiscii" ] || {
+		error_msg "bottled_wiscii: $bottled_wiscii"
+		error_msg "counted_wiscii: $counted_wiscii"
+		return 1
+		}
+	easytls_verbose "Master hash check OK: $counted_wiscii"
+}
+
+
+
+############################################################################
+#
+# EASYTLS SETUP Section
+#
+
+# Ensure required external binaries can be found
+# Don't wait for Easy-RSA3 to be patched because that is futile
+external_deps ()
+{
+	# Set the external binary names
+	#easytls_openssl='openssl' # Checked by Easy-RSA3
+	EASYTLS_AWK='awk' # Checked by Easy-RSA3
+	EASYTLS_CAT='cat' # Checked by Easy-RSA3
+	EASYTLS_CP='cp' # Checked by Easy-RSA3
+	EASYTLS_DATE='date'
+	EASYTLS_GREP='grep'
+	#easytls_ls='ls' # Not used in Easy-TLS
+	EASYTLS_MKDIR='mkdir' # Checked by Easy-RSA3
+	EASYTLS_MKTEMP='mktemp'
+	#easytls_mv='mv' # Not used in Easy-TLS
+	EASYTLS_PRINTF='printf' # Checked by Easy-RSA3
+	EASYTLS_RM='rm' # Checked by Easy-RSA3
+	EASYTLS_SED='sed'
+
+	# Check the ones Easy-RSA3 fails to..
+	"$EASYTLS_DATE"             > /dev/null || die 'Missing file: date'
+	"$EASYTLS_GREP" --version   > /dev/null || die 'Missing file: grep'
+	"$EASYTLS_MKTEMP" --version > /dev/null || die 'Missing file: mktemp'
+	"$EASYTLS_SED" --version    > /dev/null || die 'Missing file: sed'
+}
+
+# vars setup
+# Here sourcing of 'vars' if present occurs. If not present, defaults are used
+# to support running without a sourced config format
+vars_setup()
+{
+	# Try to locate a 'vars' file in order of location preference.
+	# If one is found, source it
+	vars=
+
+	# set up program path
+	prog_file="$0"
+	prog_dir="${prog_file%/*}"
+	prog_vars="${prog_dir}/vars"
+	# set up PKI path
+	pki_vars="${EASYRSA_PKI:-$PWD/pki}/vars"
+
+	# command-line path:
+	if [ ! -z "$EASYRSA_VARS_FILE" ]; then
+		if [ ! -f "$EASYRSA_VARS_FILE" ]; then
+			# If the --vars option does not point to a file
+			# then show helpful error.
+			die "The file '$EASYRSA_VARS_FILE' was not found."
+		fi
+		vars="$EASYRSA_VARS_FILE"
+	# PKI location, if present:
+	elif [ -f "$pki_vars" ]; then
+		vars="$pki_vars"
+	# EASYRSA, if defined:
+	elif [ -n "$EASYRSA" ] && [ -f "$EASYRSA/vars" ]; then
+		vars="$EASYRSA/vars"
+	# program location:
+	elif [ -f "$prog_vars" ]; then
+		vars="$prog_vars"
+	# vars of last resort ./vars
+	elif [ -f "./vars" ]; then
+		vars="./vars"
+		warn "'./vars' of last resort !"
+	fi
+
+	# If a vars file was located, source it
+	# If $EASYRSA_NO_VARS is defined (not blank) this is skipped
+	if [ -z "$EASYRSA_NO_VARS" ] && [ -n "$vars" ]; then
+		EASYRSA_CALLER=1
+		. "$vars"
+		# Make this a verbose only notice
+		easytls_verbose "Note: using Easy-RSA configuration from: $vars"
+	fi
+
+	# Set defaults, preferring existing env-vars if present
+	set_var
+	set_var EASYRSA                 "$prog_dir"
+	set_var EASYRSA_OPENSSL         "openssl"
+	set_var EASYRSA_PKI             "$PWD/pki"
+	set_var EASYRSA_TEMP_DIR        "$EASYRSA_PKI"
+	set_var EASYRSA_INDEX           "$EASYRSA_PKI/index.txt"
+
+	set_var EASYTLS                 "$PWD"
+	set_var EASYTLS_PKI             "$EASYRSA_PKI/easytls"
+	set_var EASYTLS_MD_DIR          "$EASYTLS_PKI/metadata"
+	set_var EASYTLS_DATA_DIR        "$EASYTLS_PKI/data"
+	set_var EASYTLS_WISCII_HASH     "$EASYTLS_DATA_DIR/easytls-wiscii.hash"
+	set_var EASYTLS_CONFIG_FILE     "$EASYTLS_DATA_DIR/easytls-config.txt"
+	set_var EASYTLS_CONFIG_HASH     "$EASYTLS_DATA_DIR/easytls-config.hash"
+	set_var EASYTLS_INLINE_INDEX    "$EASYTLS_DATA_DIR/easytls-inline-index.txt"
+	set_var EASYTLS_IL_INDEX_HASH   "$EASYTLS_DATA_DIR/easytls-inline-index.hash"
+	set_var EASYTLS_DISABLED_LIST   "$EASYTLS_DATA_DIR/easytls-disabled-list.txt"
+	set_var EASYTLS_DISABLED_HASH   "$EASYTLS_DATA_DIR/easytls-disabled-list.hash"
+	set_var EASYTLS_CA_IDENTITY     "$EASYTLS_DATA_DIR/easytls-ca-identity.txt"
+	set_var EASYTLS_KEY_INDEX       "$EASYTLS_DATA_DIR/easytls-key-index.txt"
+	set_var EASYTLS_KEY_HASH        "$EASYTLS_DATA_DIR/easytls-key-index.hash"
+	set_var TLSKEY_SUBNAME          "NOSUBKEY"
+
+	set_var EASYTLS_VERIFY_V2_SH    "$EASYTLS/easytls-cryptv2-verify.sh"
+	set_var EASYTLS_VERIFY_V1_SH    "$EASYTLS/easytls-verify.sh"
+	set_var EASYTLS_CLICON_SH       "$EASYTLS/easytls-cryptv2-client-connect.sh"
+
+	set_var EASYTLS_SRVSCRIPT_CFG   "$EASYTLS/easytls-script.conf"
+
+	set_var EASYTLS_WIN_TC2V_BAT    "$EASYTLS/easytls-cryptv2-verify.bat"
+	set_var EASYTLS_WIN_TV_BAT      "$EASYTLS/easytls-verify.bat"
+	set_var EASYTLS_WIN_CCON_BAT    "$EASYTLS/easytls-cryptv2-client-connect.bat"
+
+	# Assign value to $EASYRSA_TEMP_DIR_session and work around
+	# Windows mktemp bug when parent dir is missing
+	if [ -z "$EASYRSA_TEMP_DIR_session" ]; then
+		if [ -d "$EASYRSA_TEMP_DIR" ]; then
+			EASYRSA_TEMP_DIR_session="$(mktemp_make_temp)"
+		else
+			# Directory does not exist then we have not run init-pki
+			"$EASYTLS_MKDIR" -p "$EASYRSA_TEMP_DIR" || \
+				die "Cannot create $EASYRSA_TEMP_DIR"
+
+			EASYRSA_TEMP_DIR_session="$(mktemp_make_temp)"
+			"$EASYTLS_RM" -rf "$EASYRSA_TEMP_DIR"
+		fi
+	fi
+} # vars_setup()
+
+# mktemp return temp_dir name
+mktemp_make_temp ()
+{
+	"$EASYTLS_MKTEMP" -du "$EASYRSA_TEMP_DIR/easy-rsa-$$.XXXXXX"
+} # => mktemp_make_temp ()
+
+# variable assignment by indirection when undefined; merely exports
+# the variable when it is already defined (even if currently null)
+# Sets $1 as the value contained in $2 and exports (may be blank)
+set_var()
+{
+	[ $# -eq 0 ] && return
+	var=$1
+	shift
+	value="$*"
+	eval "export $var=\"\${$var-$value}\""
+} #=> set_var()
+
+# Set the Easy-TLS version
+easytls_version ()
+{
+	notice "Easy-TLS version: $EASYTLS_VERSION"
+} # => easy_tls_version ()
+
+
+
+############################################################################
+#
+# EASYTLS COMMAND Section
+#
+
+########################################
+# Invocation entry point:
+
+EASYTLS_VERSION="1.28"
+
+# Be secure with a restrictive umask
+[ -z "$EASYTLS_NO_UMASK" ] && umask 077
+
+# Parse options
+while :; do
+	# Separate option from value:
+	opt="${1%%=*}"
+	val="${1#*=}"
+	empty_ok="" # Empty values are not allowed unless excepted
+
+	case "$opt" in
+	-b|--batch)
+		empty_ok=1
+		export EASYTLS_BATCH=1
+	;;
+	-p|--pki-dir)
+		export EASYRSA_PKI="$val"
+	;;
+	--vars)
+		export EASYRSA_VARS_FILE="$val"
+	;;
+	-v|--verbose)
+		empty_ok=1
+		export EASYTLS_VERBOSE=1
+	;;
+	-s|--silent)
+		empty_ok=1
+		export EASYTLS_SILENT=1
+	;;
+	-i|--inline)
+		empty_ok=1
+		export EASYTLS_BINLINE=1
+	;;
+	--dh)
+		export EASYRSA_DH_FILE="$val"
+	;;
+	-g|--custom-group)
+		export TLSKEY_CUSTOM_GRP="$val"
+	;;
+	-k|--sub-key-name)
+		export TLSKEY_SUBNAME="$val"
+	;;
+	--openvpn)
+		export EASYTLS_OPENVPN="$val"
+	;;
+	-n|--no-auto-check)
+		empty_ok=1
+		auto_check_disabled=1
+	;;
+	-y|--why-disable-file-hash)
+		empty_ok=1
+		verify_file_hash_disabled=1
+	;;
+	*)
+		break ;;
+	esac
+
+	# fatal error when no value was provided
+	if [ ! $empty_ok ] && { [ "$val" = "$1" ] || [ -z "$val" ]; }; then
+		die "Missing value to option: $opt"
+	fi
+
+	shift
+done
+
+# Verify binary dependecies are present
+external_deps
+
+# Intelligent env-var detection and auto-loading:
+vars_setup
+
+# Register cleanup on EXIT
+trap "cleanup" EXIT
+# When SIGHUP, SIGINT, SIGQUIT, SIGABRT and SIGTERM,
+# explicitly exit to signal EXIT (non-bash shells)
+trap "exit 1" 1
+trap "exit 2" 2
+trap "exit 3" 3
+trap "exit 6" 6
+trap "exit 14" 15
+
+# Load config options - Does not change command line options
+config_use || die "Config error"
+
+# Verify me!
+verify_wiscii_hash || {
+	help_note='
+ * Some files have been manually altered, restore the changes to continue..'
+	die "Master hash check failed"
+	}
+
+# determine how we were called, then hand off to the function responsible
+cmd="$1"
+[ -n "$1" ] && shift # scrape off command
+
+case "$cmd" in
+	# Initialise only
+	init|init-tls)
+		init_tls "$@" || \
+			die "Error: init_tls"
+		#unset EASYTLS_not_init
+		;;
+	v|version)
+		easytls_version || \
+			die "Error: easytls_version"
+		exit 0
+		;;
+	''|help|-h|--help|--usage)
+		cmd_help "$1" || \
+			die "Error: cmd_help"
+		exit 0
+		;;
+
+	*)
+	# If not initialised then quit
+	help_note="Use './easytls init' to initialise TLS."
+	[ $EASYTLS_not_init ] && die 'Easy-TLS has not been initialised'
+	unset help_note
+
+	# Everything else
+	case "$cmd" in
+	build)
+		interactive_build || \
+			die "Error: interactive_build"
+		;;
+	inline)
+		interactive_inline || \
+			die "Error: interactive_inline"
+		;;
+	remove)
+		interactive_remove || \
+			die "Error: interactive_remove"
+		;;
+	script)
+		interactive_scripts || \
+			die "Error: interactive_scripts"
+		;;
+	bta|build-tls-auth)
+		build_tls_auth "$@" || \
+			die "Error: build_tls_auth"
+		;;
+	btc|build-tls-crypt)
+		build_tls_crypt_v1 "$@" || \
+			die "Error: build_tls_crypt_v1"
+		;;
+	btv2s|btcv2s|build-tls-crypt-v2-server)
+		build_tls_crypt_v2_server "$@" || \
+			die "Error: build_tls_crypt_v2_server"
+		;;
+	btv2c|btcv2c|build-tls-crypt-v2-client)
+		build_tls_crypt_v2_client "$@" || \
+			die "Error: build_tls_crypt_v2_client"
+		;;
+	remove-tlskey)
+		remove_tlskey "$@" || \
+			die "Error: remove_tlskey"
+		;;
+	sid|save-id)
+		save_id || \
+			die "Error: save_id"
+		;;
+	s|status)
+		status "$@" || \
+			die "Error: status"
+		unset status_disabled_auto_check
+		;;
+	ita|inline-tls-auth)
+		inline_tls_auth "$@" || \
+			die "Error: inline_tls_auth"
+		;;
+	itc|inline-tls-crypt)
+		inline_tls_crypt_v1 "$@" || \
+			die "Error: inline_tls_crypt_v1"
+		;;
+	itv2|itcv2|inline-tls-crypt-v2)
+		inline_tls_crypt_v2 "$@" || \
+			die "Error: inline_tls_crypt_v2"
+		;;
+	remove-inline)
+		remove_inline "$@" || \
+			die "Error: remove_inline"
+		;;
+	irn|irw|inline-renew)
+		inline_renew "$@" || \
+			die "Error: inline_renew"
+		;;
+	is|inline-show)
+		inline_show "$@" || \
+			die "Error: inline_show"
+		;;
+	inline-index-rebuild)
+		inline_index_rebuild "$@" || \
+			die "Error: inline_index_rebuild"
+		;;
+	ix|inline-expire)
+		inline_expire "$@" || \
+			die "Error: inline_expire"
+		;;
+	cx|cert-expire)
+		cert_expire "$@" || \
+			die "Error: cert_expire"
+		;;
+	d|disable)
+		disabled_list_manager "disable" "$@" || \
+			die "Error: disabled_list_manager"
+		;;
+	e|enable)
+		disabled_list_manager "enable" "$@" || \
+			die "Error: disabled_list_manager"
+		;;
+	disabled-list-rehash)
+		disabled_list_manager "rehash" "$@" || \
+			die "Error: disabled_list_manager rehash"
+		;;
+	import-key)
+		import_key "$@" || \
+			die "Error: import_key"
+		;;
+	cf|cfg|config)
+		easytls_config "$@" || \
+			die "Error: easytls_config"
+		;;
+	*)
+		die "Unknown command '$cmd'. Run without commands for help."
+		;;
+	esac # Everything else
+
+	;;
+esac # Initialise
+
+# EasyTLS auto-check
+easytls_auto_check || die "Error: easytls_auto_check"
+
+# save me!
+save_wiscii_hash || die "Master hash save failed"
+
+# Done
