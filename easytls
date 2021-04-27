@@ -2320,7 +2320,7 @@ verify_cert_serial ()
 	# Test it
 	"$EASYTLS_PRINTF" '%s' "$cert_serial" | \
 		"$EASYTLS_GREP" -q '[^[:xdigit:]]' && {
-			error_msg "verify_cert_serial - cert_serial error: $cert_serial"
+			error_msg "verify_cert_serial - cert_serial hex error: $cert_serial"
 			return 1
 			}
 	hash_size=${#cert_serial}
@@ -2343,15 +2343,6 @@ verify_cert_serial ()
 		return 1
 	;;
 	esac
-
-	"$EASYTLS_PRINTF" '%s' "$cert_serial" | "$EASYTLS_GREP" -q '[[:blank:][:punct:]]' && {
-		error_msg "verify_cert_serial - Invalid serial: $cert_serial"
-		return 1
-		}
-	"$EASYTLS_PRINTF" '%s' "$cert_serial" | "$EASYTLS_GREP" -q '^[[:xdigit:]]\+$' || {
-		error_msg "verify_cert_serial - Invalid serial: $cert_serial"
-		return 1
-		}
 }
 
 # tlskey verify serial number is valid
@@ -2415,11 +2406,11 @@ remove_tlskey ()
 	# Get tlskey serial number from tlskey-index
 	tlskey_serial="$(tlskey_index_full_name_to_tls_serial)"
 
-	# Get tlskey serial number from tlskey-index
-	cert_serial="$(tlskey_index_full_name_to_x509_serial)"
-
 	# Verify this tlskey-serial
 	verify_tlskey_serial || die "verify_tlskey_serial: failed"
+
+	# Get tlskey serial number from tlskey-index
+	cert_serial="$(tlskey_index_full_name_to_x509_serial)"
 
 	# Verify this cert-serial
 	verify_cert_serial || die "verify_cert_serial: failed"
