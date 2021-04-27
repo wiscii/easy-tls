@@ -2328,18 +2328,18 @@ verify_cert_serial ()
 	case ${EASYRSA_RAND_SN} in
 	yes)
 		[ $hash_size -eq 32 ] || {
-			error_msg "verify_cert_serial - cert_serial size: $cert_serial"
+			error_msg "verify_cert_serial - cert_serial size !=32: $cert_serial"
 			return 1
 			}
 	;;
 	no)
 		[ $hash_size -lt 32 ] || {
-			error_msg "verify_cert_serial - cert_serial size: $cert_serial"
+			error_msg "verify_cert_serial - cert_serial size !<32: $cert_serial"
 			return 1
 			}
 	;;
 	*)
-		error_msg "verify_cert_serial - Unknown algorithm: ${EASYTLS_HASH_ALGO}"
+		error_msg "verify_cert_serial - Certificate style: ${EASYRSA_RAND_SN}"
 		return 1
 	;;
 	esac
